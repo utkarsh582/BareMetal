@@ -38,6 +38,8 @@ xhci_init_cap_next:
 	call os_bus_read
 	cmp al, 0x11
 	je xhci_init_msix
+	cmp al, 0x05
+	je xhci_init_msi
 xhci_init_cap_next_offset:
 	shr eax, 8			; Shift pointer to AL
 	cmp al, 0x00			; End of linked list?
@@ -72,7 +74,6 @@ xhci_init_msix:
 	mov rdi, rax
 	pop rdx
 	; Configure MSI-X Table
-;	push rcx
 	add cx, 1			; Table Size is 0-indexed
 	mov ebx, 0x000040A0		; Trigger Mode (15), Level (14), Delivery Mode (10:8), Vector (7:0)
 xhci_init_msix_entry:
@@ -88,16 +89,27 @@ xhci_init_msix_entry:
 	dec cx
 	cmp cx, 0
 	jne xhci_init_msix_entry
+	jmp xhci_init_msix_done
+xhci_init_msi:
+	push rdx
+	; Enable MSI, Mask it, Get Table Size
+	; Example MSI Entry
+	; 00869005 <- 1st Cap ID 0x05 (MSI), next ptr 0x90, message control 0x0x0086 (64-bit (7), MMC (3:1) is 011b, Enable (0))
+	; 00000000
+	; 00000000
+	; 00000000
+	pop rdx
+xhci_init_msix_done:
 	; Create a gate in the IDT
 	mov edi, 0xA0
 	mov rax, xhci_int0
 	call create_gate		; Create the gate for the Primary Interrupter
 	mov edi, 0xA1
 	mov rax, xhci_int1
-	call create_gate		; Create the gate for the Primary Interrupter
-	mov edi, 0xA2
-	mov rax, xhci_int2
-	call create_gate		; Create the gate for the Primary Interrupter
+	call create_gate		; Create the gate for Interrupter 1 (Keyboard)
+;	mov edi, 0xA2
+;	mov rax, xhci_int2
+;	call create_gate		; Create the gate for Interrupter 2 (Mouse)
 
 	; Mark controller memory as un-cacheable
 	mov rax, [os_xHCI_Base]
@@ -244,7 +256,7 @@ xhci_build_scratchpad:
 	; mov rdi, os_usb_CR
 	; TODO Create the link TRB
 
-	; Configure Segment Table
+	; Configure Segment Tables
 	; ┌──────────────────────────────────────┐
 	; | 31             16 15        6 5     0|
 	; ├──────────────────────────────┬───────┤
@@ -260,7 +272,7 @@ xhci_build_scratchpad:
 	mov rax, os_usb_ERS+0		; Starting Address of Event Ring Segment
 	mov rdi, os_usb_ERST+0		; Starting Address of Event Ring Segment Table
 	mov [rdi], rax			; Ring Segment Base Address
-	mov eax, 16
+	mov eax, 256			; 256 * 16 bytes each = 4096 bytes
 	mov [rdi+8], eax		; Ring Segment Size (bits 15:0)
 	xor eax, eax
 	mov [rdi+12], eax
@@ -268,20 +280,21 @@ xhci_build_scratchpad:
 	mov rax, os_usb_ERS+4096	; Starting Address of Event Ring Segment
 	mov rdi, os_usb_ERST+4096	; Starting Address of Event Ring Segment Table
 	mov [rdi], rax			; Ring Segment Base Address
-	mov eax, 16
+	mov eax, 256			; 256 * 16 bytes each = 4096 bytes
 	mov [rdi+8], eax		; Ring Segment Size (bits 15:0)
 	xor eax, eax
 	mov [rdi+12], eax
-	; Segment table for Interrupter 2
-	mov rax, os_usb_ERS+8192	; Starting Address of Event Ring Segment
-	mov rdi, os_usb_ERST+8192	; Starting Address of Event Ring Segment Table
-	mov [rdi], rax			; Ring Segment Base Address
-	mov eax, 16
-	mov [rdi+8], eax		; Ring Segment Size (bits 15:0)
-	xor eax, eax
-	mov [rdi+12], eax
+;	; Segment table for Interrupter 2
+;	mov rax, os_usb_ERS+8192	; Starting Address of Event Ring Segment
+;	mov rdi, os_usb_ERST+8192	; Starting Address of Event Ring Segment Table
+;	mov [rdi], rax			; Ring Segment Base Address
+;	mov eax, 256			; 256 * 16 bytes each = 4096 bytes
+;	mov [rdi+8], eax		; Ring Segment Size (bits 15:0)
+;	xor eax, eax
+;	mov [rdi+12], eax
 
-	; Configure Event Ring for Primary Interrupter (Interrupt 0)
+	; Configure Interrupter Event Rings
+	; Event Ring for Primary Interrupter (Interrupt 0)
 	mov rdi, [xhci_rt]
 	add rdi, xHCI_IR_0		; Interrupt Register 0
 ; DEBUG - Disable int 0 for now - Interrupts don't fire until kernel is fully started
@@ -296,8 +309,7 @@ xhci_build_scratchpad:
 	mov [rdi+0x18], rax		; Event Ring Dequeue Pointer (ERDP)
 	mov rax, os_usb_ERST
 	mov [rdi+0x10], rax		; Event Ring Segment Table Base Address (ERSTBA)
-
-	; Configure Event Ring for Interrupter 1
+	; Event Ring for Interrupter 1
 	mov rdi, [xhci_rt]
 	add rdi, xHCI_IR_1		; Interrupt Register 1
 	mov eax, 2			; Interrupt Enable (bit 1), Interrupt Pending (bit 0)
@@ -310,20 +322,19 @@ xhci_build_scratchpad:
 	mov [rdi+0x18], rax		; Event Ring Dequeue Pointer (ERDP)
 	mov rax, os_usb_ERST+4096
 	mov [rdi+0x10], rax		; Event Ring Segment Table Base Address (ERSTBA)
-
-	; Configure Event Ring for Interrupter 2
-	mov rdi, [xhci_rt]
-	add rdi, xHCI_IR_2		; Interrupt Register 2
-	mov eax, 2			; Interrupt Enable (bit 1), Interrupt Pending (bit 0)
-	mov [rdi+0x00], eax		; Interrupter Management (IMAN)
-	mov eax, 64
-	mov [rdi+0x04], eax		; Interrupter Moderation (IMOD)
-	mov eax, 1			; ERSTBA points to 1 Segment Table
-	mov [rdi+0x08], eax		; Event Ring Segment Table Size (ERSTSZ)
-	add rax, os_usb_ERS+8192
-	mov [rdi+0x18], rax		; Event Ring Dequeue Pointer (ERDP)
-	mov rax, os_usb_ERST+8192
-	mov [rdi+0x10], rax		; Event Ring Segment Table Base Address (ERSTBA)
+;	; Event Ring for Interrupter 2
+;	mov rdi, [xhci_rt]
+;	add rdi, xHCI_IR_2		; Interrupt Register 2
+;	mov eax, 2			; Interrupt Enable (bit 1), Interrupt Pending (bit 0)
+;	mov [rdi+0x00], eax		; Interrupter Management (IMAN)
+;	mov eax, 64
+;	mov [rdi+0x04], eax		; Interrupter Moderation (IMOD)
+;	mov eax, 1			; ERSTBA points to 1 Segment Table
+;	mov [rdi+0x08], eax		; Event Ring Segment Table Size (ERSTSZ)
+;	add rax, os_usb_ERS+8192
+;	mov [rdi+0x18], rax		; Event Ring Dequeue Pointer (ERDP)
+;	mov rax, os_usb_ERST+8192
+;	mov [rdi+0x10], rax		; Event Ring Segment Table Base Address (ERSTBA)
 
 	; Start Controller
 	mov eax, 0x05			; Set bit 0 (RS) and bit 2 (INTE)
@@ -343,23 +354,42 @@ xhci_check_next:
 	jnc xhci_reset_skip
 	bts eax, 4			; Port Reset
 	mov [rsi+rbx], eax
-
-	; TODO - insert Enable Slot, Set Address, and others here
 xhci_reset_skip:
 	inc ecx
 	cmp ecx, edx
 	jne xhci_check_next
 
-	; Check Event ring for xHCI_ETRB_PSC
+	mov eax, 100000
+	call b_delay
+
+	; Check Event ring for xHCI_ETRB_PSC and gather enabled ports
+	xor ecx, ecx
+	mov rdi, xhci_portlist
 	mov rsi, os_usb_ERS
+	sub rsi, 16
+xhci_check_port:
+	add rsi, 16
 	mov eax, [rsi+12]		; Load dword 3
 	shr eax, 10			; Shift Type to AL
+	cmp al, 0			; End of list
+	je xhci_check_port_end
 	cmp al, xHCI_ETRB_PSC
-	je xhci_enable_slot
-xhci_enable_slot:
+	je xhci_check_port_store
+	jmp xhci_check_port	
+xhci_check_port_store:
+	inc cl
+	mov al, [rsi+3]
+	stosb
+	jmp xhci_check_port
+xhci_check_port_end:
+	mov byte [xhci_portcount], cl
+
+	; At this point xhci_portcount contains the number of activated ports
+	; and xhci_portlist is a list of the port numbers
 
 	; Build a TRB for Enable Slot in the Command Ring
 	mov rdi, os_usb_CR
+	add rdi, [xhci_croff]
 	xor eax, eax
 	stosd				; Store dword 0
 	stosd				; Store dword 1
@@ -368,6 +398,8 @@ xhci_enable_slot:
 	shl eax, 10			; Shift opcode to bits 15:10
 	bts eax, 0			; Cycle Bit
 	stosd				; Store dword 3
+	add qword [xhci_croff], 16
+	; 0x00000000 0x00000000 0x0000000 0x00002401
 
 	; Ring the Doorbell for the Command Ring
 	xor eax, eax
@@ -389,6 +421,7 @@ xhci_enable_slot:
 
 	; TODO - Check Event ring for the Completion Code of the TRB that was sent
 	; Look for the Address of the TRB
+	; 0x0000000000690000 0x01000000 0x01008401
 
 	mov eax, 100000
 	call b_delay
@@ -414,14 +447,17 @@ xhci_enable_slot:
 	mov eax, [xhci_csz]
 	add rdi, rax
 	mov dword [rdi+0], 0x08300000	; Set Context Entries (31:27) to 1, set Speed (23:20)
-	mov dword [rdi+4], 0x00050000	; Set Root Hub Port Number (23:16)
+	xor eax, eax
+	mov al, [xhci_portlist]		; Collect port number
+	shl eax, 16			; Shift value to 23:16
+	mov dword [rdi+4], eax		; Set Root Hub Port Number (23:16)
 	mov dword [rdi+8], 0x00000000	; Set Interrupter Target (31:22)
 	; TODO - Values above should not be hard-coded
 	; Set Endpoint Context 0
 	mov eax, [xhci_csz]
 	add rdi, rax
 	mov dword [rdi+0], 0x00000000
-	mov dword [rdi+4], 0x00080026	; Set Max Packet Size (31:16) to 8, EP Type (5:3) to 4 (Control), CErr (2:1) to 3
+	mov dword [rdi+4], 0x00400026	; Set Max Packet Size (31:16) to 64, EP Type (5:3) to 4 (Control), CErr (2:1) to 3
 	mov rax, os_usb_TR0		; Address of Transfer Ring
 	bts rax, 0			; DCS
 	mov qword [rdi+8], rax
@@ -429,7 +465,7 @@ xhci_enable_slot:
 
 	; Build a TRB for Set Address in the Command Ring
 	mov rdi, os_usb_CR
-	add rdi, 16
+	add rdi, [xhci_croff]
 	mov rax, os_usb_IDC		; Address of the Input Context
 	stosq				; dword 0 & 1
 	xor eax, eax			; Reserved
@@ -440,6 +476,7 @@ xhci_enable_slot:
 ;	bts eax, 9			; B
 	bts eax, 0			; Cycle
 	stosd				; dword 3
+	add qword [xhci_croff], 16
 
 	xor eax, eax
 	mov rdi, [xhci_db]
@@ -457,6 +494,7 @@ xhci_enable_slot:
 	; ├─────────┴────────────┬───────┬─────┬─┤
 	; | Slot ID |    RsvdZ   |   33  |RsvdZ|C|
 	; └─────────┴────────────┴───────┴─────┴─┘
+	; 0x XX XX 84 01
 
 	; TODO - Check Event ring for the Completion Code of the TRB that was sent
 	; Look for the Address of the TRB
@@ -483,7 +521,7 @@ xhci_enable_slot:
 	stosq				; dword 0 & 1 - Data Buffer (63:0)
 	mov eax, 0x00000008		; Request 8 bytes
 	stosd				; dword 2 - Interrupter Target (31:22), TD Size (21:17), TRB Transfer Length (16:0)
-	mov eax, 0x00010C01		; DIR, TRB Type 3, C
+	mov eax, 0x00010C13		; DIR, TRB Type 3, CH, ENT, C
 	stosd				; dword 3 - DIR (16), TRB Type (15:10), IDT (6), IOC (5), CH (4), NS (3), ISP (2), ENT (1), C (0)
 	; Status Stage
 	xor eax, eax
@@ -492,11 +530,12 @@ xhci_enable_slot:
 	mov eax, 0x00001013		; TRB Type 4, CH, ENT, C
 	stosd				; dword 3 - DIR (16), TRB Type (15:10), IOC (5), CH (4), ENT (1), C (0)
 	; Event Data
-	mov rax, os_usb_data1
+	add qword [xhci_evtoken], 1
+	mov rax, [xhci_evtoken]
 	stosq				; dword 0 & 1 - Data Buffer (63:0)
 	xor eax, eax
 	stosd				; dword 2 - Interrupter Target (31:22)
-	mov eax, 0x00001C21		; TRB Type 7, IOC, C
+	mov eax, 0x00001C01		; TRB Type 7, C
 	stosd				; dword 3 - TRB Type (15:10), IOC (5), Cycle (0)
 
 	; Ring doorbell for Slot 1
@@ -510,10 +549,36 @@ xhci_enable_slot:
 	mov eax, 100000
 	call b_delay
 
+	; TODO - Check first 8 bytes of Device Descriptor
+	; Example from QEMU keyboard
+	;
+	; 0000: 0x12 0x01 0x00 0x02 0x00 0x00 0x00 0x40
+	; 
+	; 1) Update Endpoint Context 0 Max Packet Size (to 0x40 in the case above)
+	; 2) Run Evaluate Context
+	;
+	;	; Build a TRB for Evaluate Context in the Command Ring
+	;	mov rdi, os_usb_CR
+	;	add rdi, [xhci_croff]
+	;	mov rax, os_usb_IDC		; Address of the Input Context
+	;	stosq				; dword 0 & 1
+	;	xor eax, eax
+	;	stosd				; dword 2
+	;	mov eax, 0x01000000		; Set Slot ID (31:24)
+	;	mov al, xHCI_CTRB_EVALC
+	;	shl ax, 10
+	;	bts eax, 0			; Cycle
+	;	stosd				; dword 3
+	;	add qword [xhci_croff], 16
+	;
+	;	xor eax, eax
+	;	mov rdi, [xhci_db]
+	;	stosd				; Write to the Doorbell Register
+
 	; Request full data from Device Descriptor
 
 	xor ebx, ebx
-	mov bl, [os_usb_data0]		; BL contains length
+	mov bl, [os_usb_data0]		; BL contains Device Descriptor length
 
 	; Setup Stage
 	mov rax, 0x01000680		; 0x01 Device Descriptor
@@ -530,7 +595,7 @@ xhci_enable_slot:
 	stosq				; dword 0 & 1 - Data Buffer (63:0)
 	mov eax, ebx			; BL contains length
 	stosd				; dword 2 - Interrupter Target (31:22), TD Size (21:17), TRB Transfer Length (16:0)
-	mov eax, 0x00010C01		; DIR, TRB Type 3, C
+	mov eax, 0x00010C13		; DIR, TRB Type 3, CH, ENT, C
 	stosd				; dword 3 - DIR (16), TRB Type (15:10), IDT (6), IOC (5), CH (4), NS (3), ISP (2), ENT (1), C (0)
 	; Status Stage
 	xor eax, eax
@@ -539,12 +604,12 @@ xhci_enable_slot:
 	mov eax, 0x00001013		; TRB Type 4, CH, ENT, C
 	stosd				; dword 3 - DIR (16), TRB Type (15:10), IOC (5), CH (4), ENT (1), C (0)
 	; Event Data
-	mov rax, os_usb_data1
-	add rax, 0x40
+	add qword [xhci_evtoken], 1
+	mov rax, [xhci_evtoken]
 	stosq				; dword 0 & 1 - Data Buffer (63:0)
 	xor eax, eax			; Interrupter 0 (31:22)
 	stosd				; dword 2 - Interrupter Target (31:22)
-	mov eax, 0x00001C21		; TRB Type 7, IOC, C
+	mov eax, 0x00001C01		; TRB Type 7, C
 	stosd				; dword 3 - TRB Type (15:10), IOC (5), Cycle (0)
 
 	; Ring doorbell for Slot 1
@@ -555,12 +620,28 @@ xhci_enable_slot:
 	stosd				; Write to the Doorbell Register
 	pop rdi
 
-	; TODO - Check Device Descriptor
-	; Example from QEMU mouse
+	; TODO - Check full Device Descriptor
+	; Example from QEMU keyboard
 	;
 	; 0000: 0x12 0x01 0x00 0x02 0x00 0x00 0x00 0x40
-	; 0008: 0x27 0x06 0x01 0x00 0x00 0x00 0x01 0x02
-	; 0010: 0x09 0x01
+	; 0008: 0x27 0x06 0x01 0x00 0x00 0x00 0x01 0x04
+	; 0010: 0x0B 0x01
+	;
+	; Expanded out:
+	; Length 0x12
+	; Type 0x01
+	; Release Num 0x0200
+	; Device Class 0x00
+	; Sub Class 0x00
+	; Protocol 0x00
+	; Max Packet Size 0x40
+	; Vendor ID 0x0627
+	; Product ID 0x0001
+	; Device Release 0x0000
+	; Manufacturer 0x01
+	; Product 0x04
+	; Serial Number 0x0B
+	; Configurations 0x01
 	;
 	; Gather Vendor ID (offset 8) and Product ID (offset 10)
 	; Build a table
@@ -595,12 +676,12 @@ xhci_enable_slot:
 	mov eax, 0x00001013		; TRB Type 4, CH, ENT, C
 	stosd				; dword 3 - DIR (16), TRB Type (15:10), IOC (5), CH (4), ENT (1), C (0)
 	; Event Data
-	mov rax, os_usb_data1
-	add rax, 0x40
+	add qword [xhci_evtoken], 1
+	mov rax, [xhci_evtoken]
 	stosq				; dword 0 & 1 - Data Buffer (63:0)
 	xor eax, eax			; Interrupter 0 (31:22)
 	stosd				; dword 2 - Interrupter Target (31:22)
-	mov eax, 0x00001C21		; TRB Type 7, IOC, C
+	mov eax, 0x00001C01		; TRB Type 7, C
 	stosd				; dword 3 - TRB Type (15:10), IOC (5), Cycle (0)
 
 	; Ring doorbell for Slot 1
@@ -616,7 +697,7 @@ xhci_enable_slot:
 
 	; Check TotalLength
 	xor ebx, ebx
-	mov bx, [os_usb_data0+0x20+2]	; BX contains length
+	mov bx, [os_usb_data0+0x20+2]	; BX contains Configuration Descriptor length
 
 	; Request full data from Configuration Descriptor (includes Interface Descriptor (0x04) / HID Descriptor (0x21))
 
@@ -645,12 +726,12 @@ xhci_enable_slot:
 	mov eax, 0x00001013		; TRB Type 4, CH, ENT, C
 	stosd				; dword 3 - DIR (16), TRB Type (15:10), IOC (5), CH (4), ENT (1), C (0)
 	; Event Data
-	mov rax, os_usb_data1
-	add rax, 0x40
+	add qword [xhci_evtoken], 1
+	mov rax, [xhci_evtoken]
 	stosq				; dword 0 & 1 - Data Buffer (63:0)
 	xor eax, eax			; Interrupter 0 (31:22)
 	stosd				; dword 2 - Interrupter Target (31:22)
-	mov eax, 0x00001C21		; TRB Type 7, IOC, C
+	mov eax, 0x00001C01		; TRB Type 7, C
 	stosd				; dword 3 - TRB Type (15:10), IOC (5), Cycle (0)
 
 	; Ring doorbell for Slot 1
@@ -662,27 +743,65 @@ xhci_enable_slot:
 	pop rdi
 
 	; TODO - Check Configuration Descriptor
-	; Example from QEMU mouse
+	; Example from QEMU keyboard
 	;
-	; 0000: 0x09 0x02 0x22 0x00 0x01 0x01 0x06 0xa0
+	; 0000: 0x09 0x02 0x22 0x00 0x01 0x01 0x08 0xA0
 	; 0008: 0x32 0x09 0x04 0x00 0x00 0x01 0x03 0x01
-	; 0010: 0x02 0x00 0x09 0x21 0x01 0x00 0x00 0x01
-	; 0018: 0x22 0x34 0x00 0x07 0x05 0x81 0x03 0x04
+	; 0010: 0x01 0x00 0x09 0x21 0x11 0x01 0x00 0x01
+	; 0018: 0x22 0x3F 0x00 0x07 0x05 0x81 0x03 0x08
 	; 0020: 0x00 0x07
 	;
 	; Expanded out:
+	;
 	; Configuration Descriptor
-	; 0000: 0x09 0x02 0x22 0x00 0x01 0x01 0x06 0xa0
+	; 0000: 0x09 0x02 0x22 0x00 0x01 0x01 0x08 0xA0
 	; 0008: 0x32
+	;
+	; Length 0x09
+	; Type 0x02
+	; Total Length 0x0022
+	; Number of Interface 0x01
+	; Config Value 0x01
+	; Config String 0x08
+	; Attributes 0xA0
+	; Max Power 0x32
+	;
 	; Interface Descriptor
 	; 0008:      0x09 0x04 0x00 0x00 0x01 0x03 0x01
-	; 0010: 0x02 0x00
+	; 0010: 0x01 0x00
+	;
+	; Length 0x09
+	; Type 0x04
+	; Interface Number 0x00
+	; Alternate Set 0x00
+	; Endpoints 0x01
+	; Class Code 0x03
+	; Sub Class 0x01
+	; Protocol 0x01 - Keyboard
+	; Interface String 0x00
+	;
 	; HID Descriptor
-	; 0010:           0x09 0x21 0x01 0x00 0x00 0x01
-	; 0018: 0x22 0x34 0x00
+	; 0010:           0x09 0x21 0x11 0x01 0x00 0x01
+	; 0018: 0x22 0x3F 0x00
+	;
+	; Length 0x09
+	; Type 0x21
+	; Release 0x0111
+	; Contry Code 0x00
+	; Number of Descriptor 0x01
+	; Desc Type 0x22
+	; Desc Length 0x003F
+	;
 	; Endpoint Descriptor
-	; 0018:                0x07 0x05 0x81 0x03 0x04
+	; 0018:                0x07 0x05 0x81 0x03 0x08
 	; 0020: 0x00 0x07
+	;
+	; Length 0x07
+	; Type 0x05
+	; Address 0x81
+	; Attributes 0x03
+	; Max Packet Size 0x0008
+	; Interval 0x07
 	;
 	; Check Number of Interfaces (offset 4) - A HID should have 0x01
 	; Step though Configuration Descriptor (0x2) looking for the Interface Descriptor (0x4)
@@ -701,27 +820,28 @@ xhci_enable_slot:
 	mov eax, 100000
 	call b_delay
 
-	; Build a TRB for Evaluate Context in the Command Ring
-	mov rdi, os_usb_CR
-	add rdi, 32
-	mov rax, os_usb_IDC		; Address of the Input Context
-	stosq				; dword 0 & 1
-	xor eax, eax
-	stosd				; dword 2
-	mov eax, 0x01000000		; Set Slot ID (31:24)
-	mov al, xHCI_CTRB_EVALC
-	shl ax, 10
-	bts eax, 0			; Cycle
-	stosd				; dword 3
-
-	xor eax, eax
-	mov rdi, [xhci_db]
-	stosd				; Write to the Doorbell Register
-
-	; TODO - Read the event code to verify success
-
-	mov eax, 100000
-	call b_delay
+;	; Build a TRB for Evaluate Context in the Command Ring
+;	mov rdi, os_usb_CR
+;	add rdi, [xhci_croff]
+;	mov rax, os_usb_IDC		; Address of the Input Context
+;	stosq				; dword 0 & 1
+;	xor eax, eax
+;	stosd				; dword 2
+;	mov eax, 0x01000000		; Set Slot ID (31:24)
+;	mov al, xHCI_CTRB_EVALC
+;	shl ax, 10
+;	bts eax, 0			; Cycle
+;	stosd				; dword 3
+;	add qword [xhci_croff], 16
+;
+;	xor eax, eax
+;	mov rdi, [xhci_db]
+;	stosd				; Write to the Doorbell Register
+;
+;	; TODO - Read the event code to verify success
+;
+;	mov eax, 100000
+;	call b_delay
 
 	; Update Input Context
 	mov rdi, os_usb_IDC
@@ -761,7 +881,7 @@ xhci_enable_slot:
 
 	; Build a TRB for Configure Endpoint in the Command Ring
 	mov rdi, os_usb_CR
-	add rdi, 48
+	add rdi, [xhci_croff]
 	mov rax, os_usb_IDC		; Address of the Input Context
 	stosq				; dword 0 & 1
 	xor eax, eax
@@ -771,12 +891,13 @@ xhci_enable_slot:
 	shl ax, 10
 	bts eax, 0			; Cycle
 	stosd				; dword 3
+	add qword [xhci_croff], 16
 
 	xor eax, eax
 	mov rdi, [xhci_db]
 	stosd				; Write to the Doorbell Register
 
-	; Prepare to read a packet
+	; Prepare Interrupter 1 to read a packet
 	mov rdi, os_usb_TR0
 	add rdi, 0x200
 	; Normal
@@ -788,8 +909,8 @@ xhci_enable_slot:
 	mov eax, 0x00000413		; TRB Type 1, CH, ENT, C
 	stosd				; dword 3 - TRB Type (15:10), CH (4), ENT (1), Cycle (0)
 	; Event Data
-	mov rax, os_usb_data0
-	add rax, 0x120
+	add qword [xhci_evtoken], 1
+	mov rax, [xhci_evtoken]
 	stosq				; dword 0 & 1 - Data Buffer Pointer (63:0)
 	mov eax, 0x00400000		; Interrupter Target 1
 	stosd				; dword 2 - Interrupter Target (31:22)
@@ -824,7 +945,11 @@ xhci_maxslots:	db 0
 xhci_op:	dq 0			; Start of Operational Registers
 xhci_db:	dq 0			; Start of Doorbell Registers
 xhci_rt:	dq 0			; Start of Runtime Registers
+xhci_croff:	dq 0
+xhci_evtoken:	dq 0
 xhci_csz:	dd 32			; Default Context Size
+xhci_portlist:	times 32 db 0x00
+xhci_portcount:	db 0
 ; -----------------------------------------------------------------------------
 
 
@@ -848,7 +973,7 @@ xhci_int0:
 	btr eax, 3			; Clear Event Interrupt (EINT) (bit 3)
 	mov [rdi], eax
 
-	; Clear Interrupter 0 Pending
+	; Clear Interrupter 0 Pending (if set)
 	mov rdi, [xhci_rt]
 	add rdi, xHCI_IR_0		; Interrupt Register 0
 	mov eax, [rdi+xHCI_IR_IMAN]
@@ -886,15 +1011,16 @@ xhci_int1:
 	mov [rdi], eax
 
 	; Get key press
+	; 8-byte packet will be at 0x6e0100
 	; TODO Logic for shift press
-	mov eax, [os_usb_data0+0x100]
-	shr eax, 16
+	mov rax, [os_usb_data0+0x100]	; Load 8-byte keyboard packet into RAX
+	ror rax, 16
 	and eax, 0xFF			; Keep AL only
 	mov rdi, usbkeylayoutlower
 	add rdi, rax
 	mov byte al, [rdi]
 	mov [key], al
-	
+
 	; Add TRBs for next interrupt
 	mov rdi, os_usb_TR0
 	add rdi, 0x200
@@ -908,8 +1034,8 @@ xhci_int1:
 	mov eax, 0x00000413		; TRB Type 1, CH, ENT, C
 	stosd				; dword 3 - TRB Type (15:10), CH (4), ENT (1), Cycle (0)
 	; Event Data
-	mov rax, os_usb_data0
-	add rax, 0x120
+	add qword [xhci_evtoken], 1
+	mov rax, [xhci_evtoken]
 	stosq				; dword 0 & 1 - Data Buffer Pointer (63:0)
 	mov eax, 0x00400000		; Interrupter Target 1
 	stosd				; dword 2 - Interrupter Target (31:22)
@@ -927,7 +1053,7 @@ xhci_int1:
 	mov rax, [rdi+xHCI_IR_ERDP]
 	add rax, 16
 	mov [rdi+xHCI_IR_ERDP], rax
-	
+
 	add qword [tval], 32
 
 	; Ring doorbell for Slot 1
@@ -951,36 +1077,73 @@ tval: dq 32
 
 ; -----------------------------------------------------------------------------
 ; xHCI Interrupter 2 - Mouse
-align 8
-xhci_int2:
-	push rsi
-	push rax
-
-	mov al, 0x02
-	call os_debug_dump_al
-
-	; Clear Controller Interrupt Pending
-	mov rdi, [xhci_op]
-	add rdi, xHCI_USBSTS
-	mov eax, [rdi]
-	btr eax, 3			; Clear Event Interrupt (EINT) (bit 3)
-	mov [rdi], eax
-
-	; Clear Interrupter 2 Pending
-	mov rdi, [xhci_rt]
-	add rdi, xHCI_IR_2		; Interrupt Register 2
-	mov eax, [rdi]
-	btr eax, 0			; Clear Interrupt Pending (IP) (bit 0)
-	mov [rdi], eax
-
-	; Acknowledge the interrupt
-	mov ecx, APIC_EOI
-	xor eax, eax
-	call os_apic_write
-
-	pop rax
-	pop rdi
-	iretq
+;align 8
+;xhci_int2:
+;	push rsi
+;	push rax
+;
+;	; Clear Controller Interrupt Pending
+;	mov rdi, [xhci_op]
+;	add rdi, xHCI_USBSTS
+;	mov eax, [rdi]
+;	btr eax, 3			; Clear Event Interrupt (EINT) (bit 3)
+;	mov [rdi], eax
+;
+;	; Process the mouse packet
+;	; 4-byte packet will be at 0x6e0100
+;	mov eax, [os_usb_data0+0x100]	; Load 8-byte keyboard packet into RAX
+;
+;	; Add TRBs for next interrupt
+;	mov rdi, os_usb_TR0
+;	add rdi, 0x200
+;	add rdi, [tval]
+;	; Normal
+;	mov rax, os_usb_data0
+;	add rax, 0x100
+;	stosq				; dword 0 & 1 - Data Buffer Pointer (63:0)
+;	mov eax, 0x00000004
+;	stosd				; dword 2 - Interrupter Target (31:22), TD Size (21:17), TRB Transfer Length (16:0)
+;	mov eax, 0x00000413		; TRB Type 1, CH, ENT, C
+;	stosd				; dword 3 - TRB Type (15:10), CH (4), ENT (1), Cycle (0)
+;	; Event Data
+;	mov rax, os_usb_data0
+;	add rax, 0x120
+;	stosq				; dword 0 & 1 - Data Buffer Pointer (63:0)
+;	mov eax, 0x00800000		; Interrupter Target 2
+;	stosd				; dword 2 - Interrupter Target (31:22)
+;	mov eax, 0x00001C21		; TRB Type 7, IOC, C
+;	stosd				; dword 3 - TRB Type (15:10), IOC (5), Cycle (0)
+;
+;	; Clear Interrupter 2 Pending (if set)
+;	mov rdi, [xhci_rt]
+;	add rdi, xHCI_IR_2		; Interrupt Register 2
+;	mov eax, [rdi]
+;	btr eax, 0			; Clear Interrupt Pending (IP) (bit 0)
+;	mov [rdi], eax
+;
+;	; Increment Interrupter Event Ring Dequeue Pointer
+;	mov rax, [rdi+xHCI_IR_ERDP]
+;	add rax, 16
+;	mov [rdi+xHCI_IR_ERDP], rax
+;	
+;	add qword [tval], 32
+;	
+;	; Ring doorbell for Slot 1
+;	mov eax, 3			; epid 3
+;	push rdi
+;	mov rdi, [xhci_db]
+;	add rdi, 4
+;	stosd				; Write to the Doorbell Register
+;	pop rdi
+;
+;	; Acknowledge the interrupt
+;	mov ecx, APIC_EOI
+;	xor eax, eax
+;	call os_apic_write
+;
+;	pop rax
+;	pop rdi
+;	iretq
 ; -----------------------------------------------------------------------------
 
 
@@ -995,20 +1158,6 @@ xhci_int_stub:
 
 	iretq
 ; -----------------------------------------------------------------------------
-
-
-; -----------------------------------------------------------------------------
-; xHCI Mouse Interrupter
-align 8
-xhci_int_mouse:
-	; Acknowledge the interrupt
-	mov ecx, APIC_EOI
-	xor eax, eax
-	call os_apic_write
-
-	iretq
-; -----------------------------------------------------------------------------
-
 
 
 ; Memory (to be redone)
@@ -1026,10 +1175,10 @@ os_usb_DC7:		equ 0x0000000000684000	; 2K Device Context 7
 os_usb_CR:		equ 0x0000000000690000	; 0x690000 -> 0x69FFFF	64K Command Ring (16-bytes per entry. 4K in future)
 os_usb_ERST:		equ 0x00000000006A0000	; 0x6A0000 -> 0x6AFFFF	64K Event Ring Segment Table
 os_usb_ERS:		equ 0x00000000006B0000	; 0x6B0000 -> 0x6BFFFF	64K Event Ring Segment
-os_usb_IDC:		equ 0x00000000006C0000	; Input device context (temporary buffer of max 64+2048 bytes)
+os_usb_IDC:		equ 0x00000000006C0000	; 0x6C0000 -> 0x6CFFFF	64K Input device contexts (temporary buffer of max 64+2048 bytes)
 os_usb_TR0:		equ 0x00000000006D0000	; Temp transfer ring
 os_usb_data0:		equ 0x00000000006E0000
-os_usb_data1:		equ 0x00000000006F0000
+;os_usb_data1:		equ 0x00000000006F0000
 
 os_usb_scratchpad:	equ 0x0000000000700000
 
@@ -1157,10 +1306,12 @@ xHCI_CC_SPLIT_TRANSACTION_ERROR		equ 36
 
 
 usbkeylayoutlower:
-db 0, 0, 0, 0, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 0x1C, 0, 0x0E, 0, ' ', '-', '=', '[', ']', "\", 0, ';', "'", '`', ',', '.', '/', 0
-; usbkeylayoutupper:
-; db 0, 0, 0, 0, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', 0x1C, 0, 0x0E, 0, ' ', '_', '+', '{', '}', '|', 0, ':', '"', '~', '<', '>', '?', 0
-; ; 0e = backspace
-; ; 1c = enter
-; ; =============================================================================
-; ; EOF
+db 0, 1, 2, 3, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 0x1C, 41, 0x0E, 43, ' ', '-', '=', '[', ']', "\", 50, ';', "'", '`', ',', '.', '/', 57
+usbkeylayoutupper:
+db 0, 1, 2, 3, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', 0x1C, 41, 0x0E, 43, ' ', '_', '+', '{', '}', '|', 50, ':', '"', '~', '<', '>', '?', 57
+; 0e = backspace
+; 1c = enter
+
+
+; =============================================================================
+; EOF
