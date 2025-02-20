@@ -184,15 +184,19 @@ net_i8259x_reset_dma_wait:
 	jnc net_i8259x_reset_dma_wait	; If not equal, keep waiting
 
 	; Set up the PHY and the link (4.6.4)
-;	mov eax, [rsi+i8259x_AUTOC]
-;	or eax, 0x0000E000		; Set LMS (bits 15:13) for KX/KX4/KR auto-negotiation enable
-;	mov [rsi+i8259x_AUTOC], eax
-;	mov eax, [rsi+i8259x_AUTOC]
-;					; Set 10G_PMA_PMD_PARALLEL (bits 8:7)
-;	mov [rsi+i8259x_AUTOC], eax
+	mov eax, [rsi+i8259x_AUTOC]
+	and eax, 0x0000E000		; Set LMS (bits 15:13) for KX/KX4/KR auto-negotiation enable
+	or eax, 0x00006000		; Set KX/KX4/KR auto-negotiation enable
+	mov [rsi+i8259x_AUTOC], eax
+	mov eax, [rsi+i8259x_AUTOC]
+	and eax, 0x00000180		; Set 10G_PMA_PMD_PARALLEL (bits 8:7)
+	mov [rsi+i8259x_AUTOC], eax
 	mov eax, [rsi+i8259x_AUTOC]
 	bts eax, 12			; Restart_AN
 	mov [rsi+i8259x_AUTOC], eax
+
+	mov rax, 20000			; Wait 20ms (20000µs)
+	call b_delay			; Delay for 20ms
 
 	; Initialize all statistical counters (4.6.5)
 	; These registers are cleared by the device after they are read
