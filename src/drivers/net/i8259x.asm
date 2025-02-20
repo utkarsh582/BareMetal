@@ -81,7 +81,7 @@ net_i8259x_init_msix:
 	; Configure MSI-X Table
 ;	push rcx
 	add cx, 1			; Table Size is 0-indexed
-	mov ebx, 0x000040A0		; Trigger Mode (15), Level (14), Delivery Mode (10:8), Vector (7:0)
+	mov ebx, 0x000040B0		; Trigger Mode (15), Level (14), Delivery Mode (10:8), Vector (7:0)
 net_i8259x_msix_entry:
 	mov rax, [os_LocalAPICAddress]	; 0xFEE for bits 31:20, Dest (19:12), RH (3), DM (2)
 	stosd				; Store Message Address Low
@@ -245,7 +245,7 @@ net_i8259x_reset_nextdesc:
 	; Enable Advanced RX descriptors
 	mov eax, [rsi+i8259x_SRRCTL]
 	and eax, 0xF1FFFFFF		; Clear bits 27:25 for DESCTYPE
-	or eax, 0x02000000		; Bits 27:25 = 001 for Advanced desc one buffer
+	; or eax, 0x02000000		; Bits 27:25 = 001 for Advanced desc one buffer
 	bts eax, 28	; i8259x_SRRCTL_DROP_EN
 	mov [rsi+i8259x_SRRCTL], eax
 	; Set up RX descriptor ring 0
@@ -257,7 +257,7 @@ net_i8259x_reset_nextdesc:
 	mov [rsi+i8259x_RDLEN], eax
 	xor eax, eax
 	mov [rsi+i8259x_RDH], eax
-	mov eax, i8259x_MAX_DESC - 1
+	mov eax, i8259x_MAX_DESC / 2
 	mov [rsi+i8259x_RDT], eax
 	; Enable Multicast
 	mov eax, 0xFFFFFFFF
@@ -349,6 +349,11 @@ net_i8259x_init_tx_enable_wait:
 	or eax, 0x80000000		; GPIE_PBA_SUPPORT
 	or eax, 0x40000000		; GPIE_EIAME
 	mov [rsi+0x00898], eax		; Set Ixgbe_GPIE
+
+	; Set ivar0 to 0xB0
+	mov eax, [rsi+0x00900]
+	or eax, 0x000000B0           ; Set vector 0xB0 for RX queue 0
+	mov [rsi+0x00900], eax
 	
 	; Step 2:-	We don't use the minimum threshold interrupt
 	
@@ -357,15 +362,18 @@ net_i8259x_init_tx_enable_wait:
 	mov [rsi+i8259x_EIAC], eax
 
 	; Step 4:- In our case we prefer to not auto-mask the interrupts
-	; TODO- Set EITR
 	
-	; Step 5:-
+	; Step 5:- Set interrupt throttling rate
+	mov eax, 0x028
+	mov [rsi+0x00820], eax
+	
+	; Step 6:-
 	mov eax, [rsi+i8259x_EIMS]
 	or eax, 0x00000001
 	mov [rsi+i8259x_EIMS], eax
 	
 
-; DEBUG - Enable Promiscuous mode
+	; DEBUG - Enable Promiscuous mode
 	mov eax, [rsi+i8259x_FCTRL]
 	or eax, 1 << i8259x_FCTRL_MPE | 1 << i8259x_FCTRL_UPE
 	mov [rsi+i8259x_FCTRL], eax
@@ -509,11 +517,10 @@ net_i8259x_int0:
 	push rsi
 	push rax
 	
-	call net_i8254x_poll
+	; call net_i8254x_poll
 
-	mov rsi, debug_msg
-	mov rcx, 16
-    call b_output
+
+	add dword [os_i8529_int0_count], 1
 
 	; Acknowledge the interrupt
 	mov ecx, APIC_EOI
@@ -524,8 +531,6 @@ net_i8259x_int0:
 	pop rdi
 	iretq
 ; -----------------------------------------------------------------------------
-
-debug_msg db "Packet received!", 0
 
 ; Register list (All registers should be accessed as 32-bit values)
 
