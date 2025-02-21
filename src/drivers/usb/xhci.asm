@@ -8,6 +8,7 @@
 
 ; -----------------------------------------------------------------------------
 xhci_init:
+	push rsi			; Used in init_usb
 	push rdx			; RDX should already point to a supported device for os_bus_read/write
 
 	; Gather the Base I/O Address of the device
@@ -25,6 +26,7 @@ xhci_init:
 	call os_bus_write		; Write updated Status/Command
 
 	; Check for MSI-X in PCI Capabilities
+xhci_init_msix_check:
 	mov dl, 1
 	call os_bus_read		; Read register 1 for Status/Command
 	bt eax, 20			; Check bit 4 of the Status word (31:16)
@@ -32,26 +34,25 @@ xhci_init:
 	mov dl, 13
 	call os_bus_read		; Read register 13 for the Capabilities Pointer (7:0)
 	and al, 0xFC			; Clear the bottom two bits as they are reserved
-xhci_init_cap_next:
+xhci_init_msix_check_cap_next:
 	shr al, 2			; Quick divide by 4
 	mov dl, al
 	call os_bus_read
 	cmp al, 0x11
 	je xhci_init_msix
-	cmp al, 0x05
-	je xhci_init_msi
-xhci_init_cap_next_offset:
+xhci_init_msix_check_cap_next_offset:
 	shr eax, 8			; Shift pointer to AL
 	cmp al, 0x00			; End of linked list?
-	jne xhci_init_cap_next		; If not, continue reading
-	jmp xhci_init_error		; Otherwise bail out
+	jne xhci_init_msix_check_cap_next	; If not, continue reading
+	jmp xhci_init_msi_check		; Otherwise bail out and check for MSI
 xhci_init_msix:
 	push rdx
 	; Enable MSI-X, Mask it, Get Table Size
-	; QEMU MSI-X Entry
-	; 000FA011 <- 1st Cap ID 0x11 (MSIX), next ptr 0xA0, message control 0x0F - Table size is bits 10:0 so 0x0F
+	; Example MSI-X Entry (From QEMU xHCI Controller)
+	; 000FA011 <- Cap ID 0x11 (MSI-X), next ptr 0xA0, message control 0x000F - Table size is bits 10:0 so 0x0F
 	; 00003000 <- BIR (2:0) is 0x0 so BAR0, Table Offset (31:3) - 8-byte aligned so clear low 3 bits - 0x3000 in this case
 	; 00003800 <- Pending Bit BIR (2:0) and Pending Bit Offset (31:3) - 0x3800 in this case
+	; Message Control - Enable (15), Function Mask (14), Table Size (10:0)
 	call os_bus_read
 	mov ecx, eax			; Save for Table Size
 	bts eax, 31			; Enable MSIX
@@ -89,17 +90,64 @@ xhci_init_msix_entry:
 	dec cx
 	cmp cx, 0
 	jne xhci_init_msix_entry
-	jmp xhci_init_msix_done
+	; Unmask MSI-X
+	pop rdx
+	call os_bus_read
+	btr eax, 30			; Clear Function Mask
+	call os_bus_write
+	jmp xhci_init_msix_msi_done
+
+	; Check for MSI in PCI Capabilities
+xhci_init_msi_check:
+	mov dl, 1
+	call os_bus_read		; Read register 1 for Status/Command
+	bt eax, 20			; Check bit 4 of the Status word (31:16)
+	jnc xhci_init_error		; If if doesn't exist then bail out
+	mov dl, 13
+	call os_bus_read		; Read register 13 for the Capabilities Pointer (7:0)
+	and al, 0xFC			; Clear the bottom two bits as they are reserved
+xhci_init_msi_check_cap_next:
+	shr al, 2			; Quick divide by 4
+	mov dl, al
+	call os_bus_read
+	cmp al, 0x05
+	je xhci_init_msi
+xhci_init_msi_check_cap_next_offset:
+	shr eax, 8			; Shift pointer to AL
+	cmp al, 0x00			; End of linked list?
+	jne xhci_init_msi_check_cap_next	; If not, continue reading
+	jmp xhci_init_error		; Otherwise bail out
 xhci_init_msi:
 	push rdx
-	; Enable MSI, Mask it, Get Table Size
-	; Example MSI Entry
-	; 00869005 <- 1st Cap ID 0x05 (MSI), next ptr 0x90, message control 0x0x0086 (64-bit (7), MMC (3:1) is 011b, Enable (0))
-	; 00000000
-	; 00000000
-	; 00000000
+	; Enable MSI
+	; Example MSI Entry (From Intel test system)
+	; 00869005 <- Cap ID 0x05 (MSI), next ptr 0x90, message control 0x0x0086 (64-bit, MMC 8)
+	; 00000000 <- Message Address Low
+	; 00000000 <- Message Address High
+	; 00000000 <- Message Data (15:0)
+	; 00000000 <- Mask (only exists if Per-vector masking is enabled)
+	; 00000000 <- Pending (only exists if Per-vector masking is enabled)
+	; Message Control - Per-vector masking (8), 64-bit (7), Multiple Message Enable (6:4), Multiple Message Capable (3:1), Enable (0)
+	; MME/MMC 000b = 1, 001b = 2, 010b = 4, 011b = 8, 100b = 16, 101b = 32
+	; Todo - Test bit 7, Check Multiple Message Capable, copy to Multiple Message Enable
+	add dl, 1
+	mov rax, [os_LocalAPICAddress]	; 0xFEE for bits 31:20, Dest (19:12), RH (3), DM (2)
+	call os_bus_write		; Store Message Address Low
+	add dl, 1
+	shr rax, 32			; Rotate the high bits to EAX
+	call os_bus_write		; Store Message Address High
+	add dl, 1
+	mov eax, 0x000040A0		; Trigger Mode (15), Level (14), Delivery Mode (10:8), Vector (7:0)
+	call os_bus_write		; Store Message Data
+	sub dl, 3
+	call os_bus_read		; Get Message Control
+	bts eax, 21			; Debug - See MME to 8
+	bts eax, 20			; Debug - See MME to 8
+	bts eax, 16			; Set Enable
+	call os_bus_write		; Update Message Control
 	pop rdx
-xhci_init_msix_done:
+
+xhci_init_msix_msi_done:
 	; Create a gate in the IDT
 	mov edi, 0xA0
 	mov rax, xhci_int0
@@ -186,6 +234,12 @@ xhci_init_32bytecsz:
 ;	add rbx, rax
 ;	jmp xhci_xecp_read
 ;xhci_xecp_end:
+
+	; Clear memory controller will be using
+	mov rdi, os_usb
+	xor eax, eax
+	mov ecx, 131072			; 131072 * 8 = 1048576 bytes
+	rep stosq
 
 	; Reset the controller
 xhci_init_halt:
@@ -359,6 +413,14 @@ xhci_reset_skip:
 	cmp ecx, edx
 	jne xhci_check_next
 
+	; At this point the event ring should contain some port status change event entries
+	; They should appear as follows:
+	; 0xXX000000 0x00000000 0x01000000 0x00008801
+	; dword 0 - Port ID number (31:24)
+	; dword 1 - Reserved
+	; dword 2 - Completion code (31:24)
+	; dword 3 - Type 34 (15:10), C (0)
+
 	mov eax, 100000
 	call b_delay
 
@@ -383,6 +445,10 @@ xhci_check_port_store:
 	jmp xhci_check_port
 xhci_check_port_end:
 	mov byte [xhci_portcount], cl
+
+	; Check that at least 1 port was enabled
+;	cmp cl, 0
+;	je XXXX
 
 	; At this point xhci_portcount contains the number of activated ports
 	; and xhci_portlist is a list of the port numbers
@@ -421,7 +487,7 @@ xhci_check_port_end:
 
 	; TODO - Check Event ring for the Completion Code of the TRB that was sent
 	; Look for the Address of the TRB
-	; 0x0000000000690000 0x01000000 0x01008401
+	; 0x00690000 0x00000000 0x01000000 0x01008401
 
 	mov eax, 100000
 	call b_delay
@@ -457,7 +523,7 @@ xhci_check_port_end:
 	mov eax, [xhci_csz]
 	add rdi, rax
 	mov dword [rdi+0], 0x00000000
-	mov dword [rdi+4], 0x00400026	; Set Max Packet Size (31:16) to 64, EP Type (5:3) to 4 (Control), CErr (2:1) to 3
+	mov dword [rdi+4], 0x00080026	; Set Max Packet Size (31:16) to 8, EP Type (5:3) to 4 (Control), CErr (2:1) to 3
 	mov rax, os_usb_TR0		; Address of Transfer Ring
 	bts rax, 0			; DCS
 	mov qword [rdi+8], rax
@@ -549,31 +615,53 @@ xhci_check_port_end:
 	mov eax, 100000
 	call b_delay
 
-	; TODO - Check first 8 bytes of Device Descriptor
+	; Check first 8 bytes of Device Descriptor
 	; Example from QEMU keyboard
 	;
 	; 0000: 0x12 0x01 0x00 0x02 0x00 0x00 0x00 0x40
 	; 
 	; 1) Update Endpoint Context 0 Max Packet Size (to 0x40 in the case above)
+
+	push rdi
+
+	mov rdi, os_usb_IDC
+	mov eax, [xhci_csz]
+	shl eax, 1
+	add rdi, rax
+	mov eax, [rdi+4]
+	ror eax, 16
+	mov al, [os_usb_data0+7]
+	ror eax, 16
+	mov [rdi+4], eax
+
 	; 2) Run Evaluate Context
-	;
-	;	; Build a TRB for Evaluate Context in the Command Ring
-	;	mov rdi, os_usb_CR
-	;	add rdi, [xhci_croff]
-	;	mov rax, os_usb_IDC		; Address of the Input Context
-	;	stosq				; dword 0 & 1
-	;	xor eax, eax
-	;	stosd				; dword 2
-	;	mov eax, 0x01000000		; Set Slot ID (31:24)
-	;	mov al, xHCI_CTRB_EVALC
-	;	shl ax, 10
-	;	bts eax, 0			; Cycle
-	;	stosd				; dword 3
-	;	add qword [xhci_croff], 16
-	;
-	;	xor eax, eax
-	;	mov rdi, [xhci_db]
-	;	stosd				; Write to the Doorbell Register
+
+	; Build a TRB for Evaluate Context in the Command Ring
+	mov rdi, os_usb_CR
+	add rdi, [xhci_croff]
+	mov rax, os_usb_IDC		; Address of the Input Context
+	stosq				; dword 0 & 1
+	xor eax, eax
+	stosd				; dword 2
+	mov eax, 0x01000000		; Set Slot ID (31:24)
+	mov al, xHCI_CTRB_EVALC
+	shl ax, 10
+	bts eax, 0			; Cycle
+	stosd				; dword 3
+	add qword [xhci_croff], 16
+	; 0xXXXXXXXX 0xXXXXXXXX 0x0000000 0x01003401
+
+	xor eax, eax
+	mov rdi, [xhci_db]
+	stosd				; Write to the Doorbell Register
+
+	pop rdi
+	
+	mov eax, 100000
+	call b_delay
+
+	; Todo - Check result in event ring
+	; 0xXXXXXXXX 0xXXXXXXXX 0x0100000 0x01008401
 
 	; Request full data from Device Descriptor
 
@@ -853,24 +941,22 @@ xhci_check_port_end:
 	mov dword [rdi+0], 0xF8300000	; Set Context Entries (31:27) to 1, set Speed (23:20)
 	; TODO - Value above should not be hard-coded
 	; 0xF8 for all entries
-	mov dword [rdi+4], 0x00050000	; Set Root Hub Port Number (23:16)
-	; TODO - Value above should not be hard-coded
 	mov dword [rdi+8], 0x00400000	; Set Interrupter Target to 1 (31:22)
 	; Set Endpoint Context 0
 	mov eax, [xhci_csz]
 	add rdi, rax
-	mov dword [rdi+0], 0x00000000
-	mov dword [rdi+4], 0x00080026	; Set Max Packet Size (31:16) to 8, EP Type (5:3) to 4 (Control), CErr (2:1) to 3
-	; TODO - Value above should not be hard-coded
-	; Needs to be based on MaxPacketSize in the Configuration Descriptor
-	mov rax, os_usb_TR0		; Address of Transfer Ring
-	bts rax, 0			; DCS
-	mov qword [rdi+8], rax
-	mov dword [rdi+16], 0x00000008	; Set Average TRB Length (15:0) to 8
+;	mov dword [rdi+0], 0x00000000
+;	mov dword [rdi+4], 0x00080026	; Set Max Packet Size (31:16) to 8, EP Type (5:3) to 4 (Control), CErr (2:1) to 3
+;	; TODO - Value above should not be hard-coded
+;	; Needs to be based on MaxPacketSize in the Configuration Descriptor
+;	mov rax, os_usb_TR0		; Address of Transfer Ring
+;	bts rax, 0			; DCS
+;	mov qword [rdi+8], rax
+;	mov dword [rdi+16], 0x00000008	; Set Average TRB Length (15:0) to 8
 	; Set Endpoint Context 1 IN
 	mov eax, [xhci_csz]
-	add rdi, rax
-	add rdi, rax
+	add rdi, rax			; EP1 Out
+	add rdi, rax			; EP1 In
 	mov dword [rdi+0], 0x00060000	; Set Interval (23:16) to 6
 	mov dword [rdi+4], 0x0008003e	; Set Max Packet Size (31:16) to 8, EP Type (5:3) to 7 (Interrupt IN), CErr (2:1) to 3
 	mov rax, os_usb_TR0		; Address of Transfer Ring
@@ -892,10 +978,14 @@ xhci_check_port_end:
 	bts eax, 0			; Cycle
 	stosd				; dword 3
 	add qword [xhci_croff], 16
+	; 0xXXXXXXXX 0xXXXXXXXX 0x0000000 0x01003001
 
 	xor eax, eax
 	mov rdi, [xhci_db]
 	stosd				; Write to the Doorbell Register
+
+	; Todo - Check result in event ring
+	; 0xXXXXXXXX 0xXXXXXXXX 0x0100000 0x01008401
 
 	; Prepare Interrupter 1 to read a packet
 	mov rdi, os_usb_TR0
@@ -931,13 +1021,13 @@ xhci_init_error:
 	jmp $
 
 xhci_init_done:
-	; Unmask MSI-X
 	pop rdx
-	call os_bus_read
-	btr eax, 30			; Clear Function Mask
-	call os_bus_write
+	pop rsi
 
-	pop rdx
+	add rsi, 15
+	mov byte [rsi], 1		; Mark driver as installed in Bus Table
+	sub rsi, 15
+
 	ret
 
 xhci_caplen:	db 0
