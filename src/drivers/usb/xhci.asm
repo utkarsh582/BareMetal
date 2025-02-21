@@ -512,7 +512,7 @@ xhci_check_port_end:
 	; Set Slot Context
 	mov eax, [xhci_csz]
 	add rdi, rax
-	mov dword [rdi+0], 0x08300000	; Set Context Entries (31:27) to 1, set Speed (23:20)
+	mov dword [rdi+0], 0x08200000	; Set Context Entries (31:27) to 1, set Speed (23:20)
 	xor eax, eax
 	mov al, [xhci_portlist]		; Collect port number
 	shl eax, 16			; Shift value to 23:16
