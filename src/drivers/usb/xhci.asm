@@ -424,31 +424,60 @@ xhci_reset_skip:
 	mov eax, 100000
 	call b_delay
 
-	; Check Event ring for xHCI_ETRB_PSC and gather enabled ports
-	xor ecx, ecx
+;	; Check Event ring for xHCI_ETRB_PSC and gather enabled ports
+;	xor ecx, ecx
+;	mov rdi, xhci_portlist
+;	mov rsi, os_usb_ERS
+;	sub rsi, 16
+;xhci_check_port:
+;	add rsi, 16
+;	mov eax, [rsi+12]		; Load dword 3
+;	shr eax, 10			; Shift Type to AL
+;	cmp al, 0			; End of list
+;	je xhci_check_port_end
+;	cmp al, xHCI_ETRB_PSC
+;	je xhci_check_port_store
+;	jmp xhci_check_port	
+;xhci_check_port_store:
+;	inc cl
+;	mov al, [rsi+3]
+;	stosb
+;	jmp xhci_check_port
+;xhci_check_port_end:
+;	mov byte [xhci_portcount], cl
+
+	; Check Port Status registers for enabled devices with a set speed
+	xor ecx, ecx			; Slot counter
+	xor edx, edx			; Max slots
+	mov dl, byte [xhci_maxslots]
 	mov rdi, xhci_portlist
-	mov rsi, os_usb_ERS
-	sub rsi, 16
-xhci_check_port:
-	add rsi, 16
-	mov eax, [rsi+12]		; Load dword 3
-	shr eax, 10			; Shift Type to AL
-	cmp al, 0			; End of list
-	je xhci_check_port_end
-	cmp al, xHCI_ETRB_PSC
-	je xhci_check_port_store
-	jmp xhci_check_port	
-xhci_check_port_store:
-	inc cl
-	mov al, [rsi+3]
+xhci_check_port_next:
+	dec edx
+	cmp edx, 0
+	jz xhci_check_port_done		; Bail out if we've checked all ports
+	mov ebx, 0x400			; Offset to start of Port Registers
+	shl ecx, 4			; Quick multiply by 16
+	add ebx, ecx			; Add offset to EBX
+	shr ecx, 4			; Quick divide by 16
+	mov eax, [rsi+rbx]		; Load PORTSC
+	and eax, 0x00003C00
+	cmp eax, 0
+	je xhci_check_port_skip
+xhci_check_port_found:
+	sub ebx, 0x400			; Subtract Offset
+	shr ebx, 4			; Quick divide by 16
+	add ebx, 1			; Add 1 as ports start at 1
+	mov eax, ebx
 	stosb
-	jmp xhci_check_port
-xhci_check_port_end:
-	mov byte [xhci_portcount], cl
+	add byte [xhci_portcount], 1	; Increment the port count
+xhci_check_port_skip:
+	inc ecx
+	jmp xhci_check_port_next
+xhci_check_port_done:
 
 	; Check that at least 1 port was enabled
-;	cmp cl, 0
-;	je XXXX
+	add byte [xhci_portcount], 0
+	je xhci_init_done		; In no active ports then bail out
 
 	; At this point xhci_portcount contains the number of activated ports
 	; and xhci_portlist is a list of the port numbers
@@ -512,7 +541,21 @@ xhci_check_port_end:
 	; Set Slot Context
 	mov eax, [xhci_csz]
 	add rdi, rax
-	mov dword [rdi+0], 0x08200000	; Set Context Entries (31:27) to 1, set Speed (23:20)
+;	mov dword [rdi+0], 0x08300000	; Set Context Entries (31:27) to 1, set Speed (23:20)
+	; Read port speed from port register
+	xor eax, eax
+	mov al, [xhci_portlist]
+	dec al
+	shl eax, 4			; Multiply by 16
+	add eax, 0x400			; Add 0x400 for Port Base
+	add rax, [xhci_op]		; Add op base
+	mov eax, [rax]			; Get PORTSC
+	; Todo SHL by 10 and do a proper AND
+	shr eax, 10			; Shift Port Speed (13:10) to (3:0)
+	and eax, 0xF			; Clear upper bits of EAX
+	shl eax, 20			; Shift Port Speed (3:0) to (23:20)
+	bts eax, 27			; Set bit 27 for 1 Context Entry (31:27)
+	mov dword [rdi+0], eax		; Set Context Entries (31:27) to 1, set Speed (23:20)
 	xor eax, eax
 	mov al, [xhci_portlist]		; Collect port number
 	shl eax, 16			; Shift value to 23:16
@@ -1038,6 +1081,7 @@ xhci_rt:	dq 0			; Start of Runtime Registers
 xhci_croff:	dq 0
 xhci_evtoken:	dq 0
 xhci_csz:	dd 32			; Default Context Size
+align 16
 xhci_portlist:	times 32 db 0x00
 xhci_portcount:	db 0
 ; -----------------------------------------------------------------------------
@@ -1131,6 +1175,19 @@ xhci_int1:
 	stosd				; dword 2 - Interrupter Target (31:22)
 	mov eax, 0x00001C21		; TRB Type 7, IOC, C
 	stosd				; dword 3 - TRB Type (15:10), IOC (5), Cycle (0)
+	add qword [tval], 32
+
+	; Todo - Check if near the end of the transfer ring. If so, create a link TRB
+	
+	; Link
+;	mov rax, os_usb_TR0
+;	add rax, 0x200
+;	stosq				; dword 0 & 1 - Address in Transfer Ring
+;	mov eax, 0			; Interrupter Target 0
+;	stosd				; dword 2
+;	mov eax, 0x00001801		; xHCI_TTRB_LINK (bits 15:10) and Cycle (0)
+;	stosd				; dword 3
+;	add qword [tval], 16
 
 	; Clear Interrupter 1 Pending (if set)
 	mov rdi, [xhci_rt]
@@ -1143,8 +1200,6 @@ xhci_int1:
 	mov rax, [rdi+xHCI_IR_ERDP]
 	add rax, 16
 	mov [rdi+xHCI_IR_ERDP], rax
-
-	add qword [tval], 32
 
 	; Ring doorbell for Slot 1
 	mov eax, 3			; epid 3
