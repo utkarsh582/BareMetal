@@ -29,77 +29,6 @@ net_i8259x_init:
 	bts eax, 1			; Enable Memory Space
 	call os_bus_write		; Write updated Status/Command
 
-	; Check for MSI-X in PCI Capabilities
-	mov dl, 1			; Read Status/Command
-	call os_bus_read
-	bt eax, 20			; Check bit 4 of the Status word (31:16)
-	jnc net_i8254x_init_error		; If if doesn't exist then bail out
-	mov dl, 13				; Read 0xD Regiter (for Capabilities Pointer)
-	call os_bus_read		; Read register 13 for the Capabilities Pointer (7:0)
-	and al, 0xFC			; Clear the bottom two bits as they are reserved
-	test al, al             ; Check if al is zero
-	jz net_i8254x_init_error        ; If zero, bail out
-
-net_i8259x_init_cap_next:
-	shr al, 2               ; Quick divide by 4
-	mov dl, al
-	call os_bus_read
-	cmp al, 0x11
-	je net_i8259x_init_msix
-
-net_i8259x_init_cap_next_offset:
-	shr eax, 8              ; Shift pointer to AL
-	cmp al, 0x00            ; End of linked list?
-	jne net_i8259x_init_cap_next    ; If not, continue reading
-	jmp net_i8259x_init_error       ; Otherwise bail out
-
-net_i8259x_init_msix:
-	push rdx
-
-	call os_bus_read
-	mov ecx, eax			; Save for Table Size
-	bts eax, 31			; Enable MSIX
-	bts eax, 30			; Set Function Mask
-	call os_bus_write
-	shr ecx, 16			; Shift Message Control to low 16-bits
-	and cx, 0x7FF			; Keep bits 10:0
-	; Read the BIR and Table Offset
-	push rdx
-	add dl, 1
-	call os_bus_read
-	mov ebx, eax			; EBX for the Table Offset
-	and ebx, 0xFFFFFFF8		; Clear bits 2:0
-	and eax, 0x00000007		; Keep bits 2:0 for the BIR
-	add al, 0x04			; Add offset to start of BARs
-	mov dl, al
-	call os_bus_read		; Read the BAR address
-	add rax, rbx			; Add offset to base
-	sub rax, 0x04
-	mov rdi, rax
-	pop rdx
-
-	; Configure MSI-X Table
-;	push rcx
-	add cx, 1			; Table Size is 0-indexed
-	mov ebx, 0x000040A0		; Trigger Mode (15), Level (14), Delivery Mode (10:8), Vector (7:0)
-net_i8259x_msix_entry:
-	mov rax, [os_LocalAPICAddress]	; 0xFEE for bits 31:20, Dest (19:12), RH (3), DM (2)
-	stosd				; Store Message Address Low
-	shr rax, 32			; Rotate the high bits to EAX
-	stosd				; Store Message Address High
-	mov eax, ebx
-	inc ebx
-	stosd				; Store Message Data
-	xor eax, eax			; Bits 31:1 are reserved, Masked (0) - 1 for masked
-	stosd				; Store Vector Control
-	dec cx
-	cmp cx, 0
-	jne net_i8259x_msix_entry
-	; Create a gate in the IDT
-	mov edi, 0xB0
-	mov rax, net_i8259x_int0
-	call create_gate		; Create the gate for the Primary Interrupter
-
 	; Get the MAC address
 	mov rsi, [os_NetIOBaseMem]
 	mov eax, [rsi+i8259x_RAL]	; RAL
@@ -118,10 +47,6 @@ net_i8259x_msix_entry:
 	; Reset the device
 	call net_i8259x_reset
 
-	pop rdx
-	call os_bus_read
-	btr eax, 30			; Clear Function Mask
-	call os_bus_write
 net_i8259x_init_error:
 
 	pop rax
@@ -157,6 +82,8 @@ net_i8259x_reset_wait:
 	jnz net_i8259x_reset_wait	; Wait for it to read back as 0x0
 
 	; Wait 10ns
+	mov rax, 10000			
+	call b_delay			
 
 	; Disable Interrupts again (4.6.3.1)
 	xor eax, eax
@@ -184,12 +111,17 @@ net_i8259x_reset_dma_wait:
 	jnc net_i8259x_reset_dma_wait	; If not equal, keep waiting
 
 	; Set up the PHY and the link (4.6.4)
-;	mov eax, [rsi+i8259x_AUTOC]
-;	or eax, 0x0000E000		; Set LMS (bits 15:13) for KX/KX4/KR auto-negotiation enable
-;	mov [rsi+i8259x_AUTOC], eax
-;	mov eax, [rsi+i8259x_AUTOC]
-;					; Set 10G_PMA_PMD_PARALLEL (bits 8:7)
-;	mov [rsi+i8259x_AUTOC], eax
+	; mov eax, [rsi+i8259x_AUTOC]
+	; and eax, 0x0000E000		; Set LMS (bits 15:13) for KX/KX4/KR auto-negotiation enable
+	; or eax, 0x00006000		; Set KX/KX4/KR auto-negotiation enable
+	; mov [rsi+i8259x_AUTOC], eax
+	; mov eax, [rsi+i8259x_AUTOC]
+	; and eax, 0x00000180		; Set 10G_PMA_PMD_PARALLEL (bits 8:7)
+	; mov [rsi+i8259x_AUTOC], eax
+
+	; mov rax, 20000			; Wait 20ms (20000µs)
+	; call b_delay			; Delay for 20ms
+
 	mov eax, [rsi+i8259x_AUTOC]
 	bts eax, 12			; Restart_AN
 	mov [rsi+i8259x_AUTOC], eax
@@ -246,7 +178,7 @@ net_i8259x_reset_nextdesc:
 	mov eax, [rsi+i8259x_SRRCTL]
 	and eax, 0xF1FFFFFF		; Clear bits 27:25 for DESCTYPE
 	or eax, 0x02000000		; Bits 27:25 = 001 for Advanced desc one buffer
-	bts eax, 28	; i8259x_SRRCTL_DROP_EN
+	bts eax, 28				; i8259x_SRRCTL_DROP_EN
 	mov [rsi+i8259x_SRRCTL], eax
 	; Set up RX descriptor ring 0
 	mov rax, os_rx_desc
@@ -257,8 +189,20 @@ net_i8259x_reset_nextdesc:
 	mov [rsi+i8259x_RDLEN], eax
 	xor eax, eax
 	mov [rsi+i8259x_RDH], eax
-	mov eax, i8259x_MAX_DESC - 1
+	; mov eax, i8259x_MAX_DESC - 1
 	mov [rsi+i8259x_RDT], eax
+	; Set bit 16 of CTRL_EXT (Last line in 4.6.7)
+	mov eax, [rsi+i8259x_CTRL_EXT]
+	bts eax, 16
+	mov [rsi+i8259x_CTRL_EXT], eax
+	; Clear bit 12 of DCA_RXCTRL (Last line in 4.6.7)
+	mov eax, [rsi+i8259x_DCA_RXCTRL]
+	btc eax, 12
+	mov [rsi+i8259x_DCA_RXCTRL], eax
+	; Enable RX
+	mov eax, 1			; RXEN = 1
+	mov [rsi+i8259x_RXCTRL], eax	; Enable receive
+	
 	; Enable Multicast
 	mov eax, 0xFFFFFFFF
 	mov [rsi+i8259x_MTA], eax
@@ -270,30 +214,26 @@ net_i8259x_init_rx_enable_wait:
 	mov eax, [rsi+i8259x_RXDCTL]
 	bt eax, 25
 	jnc net_i8259x_init_rx_enable_wait
-	; Set SECRXCTRL_RX_DIS
-	mov eax, [rsi+i8259x_SECRXCTRL]
-	bts eax, i8259x_SECRXCTRL_RX_DIS
-	mov [rsi+i8259x_SECRXCTRL], eax
-	; Poll SECRXSTAT_SECRX_RDY
-net_i8259x_init_rx_secrx_rdy_wait:
-	mov eax, [rsi+i8259x_SECRXSTAT]
-	bt eax, i8259x_SECRXSTAT_SECRX_RDY
-	jnc net_i8259x_init_rx_secrx_rdy_wait
-	; Enable RX
-	mov eax, 1			; RXEN = 1
-	mov [rsi+i8259x_RXCTRL], eax	; Enable receive
-	; Clear SECRXCTRL.SECRX_DIS
-	mov eax, [rsi+i8259x_SECRXCTRL]
-	btc eax, i8259x_SECRXCTRL_SECRX_DIS
-	mov [rsi+i8259x_SECRXCTRL], eax
-	; Set bit 16 of CTRL_EXT (Last line in 4.6.7)
-	mov eax, [rsi+i8259x_CTRL_EXT]
-	bts eax, 16
-	mov [rsi+i8259x_CTRL_EXT], eax
-	; Clear bit 12 of DCA_RXCTRL (Last line in 4.6.7)
-	mov eax, [rsi+i8259x_DCA_RXCTRL]
-	btc eax, 12
-	mov [rsi+i8259x_DCA_RXCTRL], eax
+	xor eax, eax
+	mov [rsi+i8259x_RDH], eax
+	mov eax, i8259x_MAX_DESC - 1
+	mov [rsi+i8259x_RDT], eax
+
+; 	; Set SECRXCTRL_RX_DIS
+; 	mov eax, [rsi+i8259x_SECRXCTRL]
+; 	bts eax, i8259x_SECRXCTRL_RX_DIS
+; 	mov [rsi+i8259x_SECRXCTRL], eax
+; 	; Poll SECRXSTAT_SECRX_RDY
+; net_i8259x_init_rx_secrx_rdy_wait:
+; 	mov eax, [rsi+i8259x_SECRXSTAT]
+; 	bt eax, i8259x_SECRXSTAT_SECRX_RDY
+; 	jnc net_i8259x_init_rx_secrx_rdy_wait
+
+; 	; Clear SECRXCTRL.SECRX_DIS
+; 	mov eax, [rsi+i8259x_SECRXCTRL]
+; 	btc eax, i8259x_SECRXCTRL_SECRX_DIS
+; 	mov [rsi+i8259x_SECRXCTRL], eax
+
 
 	; Initialize transmit (4.6.8)
 	; Enable CRC offload and small packet padding
@@ -342,27 +282,27 @@ net_i8259x_init_tx_enable_wait:
 	bt eax, 25
 	jnc net_i8259x_init_tx_enable_wait
 
-	; Enable interrupts (4.6.3.1)
-	; Step 1:-
-	mov eax, [rsi+0x00898]		; Get Ixgbe_GPIE
-	or eax, 0x00000010		; GPIE_MSIx_Mode
-	or eax, 0x80000000		; GPIE_PBA_SUPPORT
-	or eax, 0x40000000		; GPIE_EIAME
-	mov [rsi+0x00898], eax		; Set Ixgbe_GPIE
+	; ; Enable interrupts (4.6.3.1)
+	; ; Step 1:-
+	; mov eax, [rsi+0x00898]		; Get Ixgbe_GPIE
+	; or eax, 0x00000010		; GPIE_MSIx_Mode
+	; or eax, 0x80000000		; GPIE_PBA_SUPPORT
+	; or eax, 0x40000000		; GPIE_EIAME
+	; mov [rsi+0x00898], eax		; Set Ixgbe_GPIE
 	
-	; Step 2:-	We don't use the minimum threshold interrupt
+	; ; Step 2:-	We don't use the minimum threshold interrupt
 	
-	; Step 3:-
-	mov eax, 0x0000FFFF
-	mov [rsi+i8259x_EIAC], eax
+	; ; Step 3:-
+	; mov eax, 0x0000FFFF
+	; mov [rsi+i8259x_EIAC], eax
 
-	; Step 4:- In our case we prefer to not auto-mask the interrupts
-	; TODO- Set EITR
+	; ; Step 4:- In our case we prefer to not auto-mask the interrupts
+	; ; TODO- Set EITR
 	
-	; Step 5:-
-	mov eax, [rsi+i8259x_EIMS]
-	or eax, 0x00000001
-	mov [rsi+i8259x_EIMS], eax
+	; ; Step 5:-
+	; mov eax, [rsi+i8259x_EIMS]
+	; or eax, 0x00000001
+	; mov [rsi+i8259x_EIMS], eax
 	
 
 ; DEBUG - Enable Promiscuous mode
@@ -444,41 +384,28 @@ net_i8259x_poll:
 	mov rsi, [os_NetIOBaseMem]	; Load the base MMIO of the NIC
 
 	; Calculate the descriptor to read from
-    mov eax, [i8259x_rx_lasthead]
-    shl eax, 4          ; Quick multiply by 16 (each descriptor is 16 bytes)
-    add rdi, rax        ; Add offset to RDI
+	mov eax, [i8254x_rx_lasthead]
+	shl eax, 4			; Quick multiply by 16
+	add eax, 8			; Offset to bytes received
+	add rdi, rax			; Add offset to RDI
+	; Todo: read all 64 bits. check status bit for DD
+	xor ecx, ecx			; Clear RCX
+	mov cx, [rdi]			; Get the packet length
+	cmp cx, 0
+	je net_i8254x_poll_end		; No data? Bail out
 
-    ; Read the full 64-bit descriptor entry
-    mov rax, [rdi]      ; Read the first 8 bytes (Buffer Address)
-    mov rdx, [rdi+8]    ; Read the next 8 bytes (Status + Length)
+	xor eax, eax
+	stosq				; Clear the descriptor length and status
 
-    ; Check if DD (bit 32) is set
-    bt rdx, 32          ; Test DD bit
-    jnc net_i8259x_poll_end  ; If not set, no packet available
-
-    ; Extract packet length (bits 15:0 of rdx)
-    mov ecx, edx        ; Get lower 32 bits
-    and ecx, 0xFFFF     ; Mask to get the length (bits 15:0)
-
-    ; Copy packet data to buffer (Caller provides buffer in RDI)
-    rep movsb
-
-    ; Clear the descriptor (Mark as free)
-    xor rax, rax
-    stosq               ; Clear Buffer Address
-    stosq               ; Clear Status + Length
-
-    ; Increment i8259x_rx_lasthead and update RDT
-    mov eax, [i8259x_rx_lasthead]
-    add eax, 1
-    and eax, i8259x_MAX_DESC - 1
-    mov [i8259x_rx_lasthead], eax
-
-    ; Update RDT (Make descriptor available again)
-    mov eax, [rsi+i8259x_RDT]  ; Read current Receive Descriptor Tail
-    add eax, 1                 ; Increment it
-    and eax, i8259x_MAX_DESC - 1
-    mov [rsi+i8259x_RDT], eax  ; Write the updated Receive Descriptor Tail
+	; Increment i8254x_rx_lasthead and the Receive Descriptor Tail
+	mov eax, [i8254x_rx_lasthead]
+	add eax, 1
+	and eax, i8254x_MAX_DESC - 1
+	mov [i8254x_rx_lasthead], eax
+	mov eax, [rsi+i8254x_RDT]	; Read the current Receive Descriptor Tail
+	add eax, 1			; Add 1 to the Receive Descriptor Tail
+	and eax, i8254x_MAX_DESC - 1
+	mov [rsi+i8254x_RDT], eax	; Write the updated Receive Descriptor Tail
 
 	pop rax
 	pop rsi
@@ -501,31 +428,6 @@ i8259x_rx_lasthead: dd 0
 ; Constants
 i8259x_MAX_PKT_SIZE	equ 16384
 i8259x_MAX_DESC		equ 16		; Must be 16, 32, 64, 128, etc.
-
-; -----------------------------------------------------------------------------
-; i8259 Interrupter 0
-align 8
-net_i8259x_int0:
-	push rsi
-	push rax
-	
-	call net_i8254x_poll
-
-	mov rsi, debug_msg
-	mov rcx, 16
-    call b_output
-
-	; Acknowledge the interrupt
-	mov ecx, APIC_EOI
-	xor eax, eax
-	call os_apic_write
-
-	pop rax
-	pop rdi
-	iretq
-; -----------------------------------------------------------------------------
-
-debug_msg db "Packet received!", 0
 
 ; Register list (All registers should be accessed as 32-bit values)
 
@@ -591,7 +493,7 @@ i8259x_RDH		equ 0x01010 ; Receive Descriptor Head
 i8259x_RDT		equ 0x01018 ; Receive Descriptor Tail
 i8259x_RXDCTL		equ 0x01028 ; Receive Descriptor Control
 i8259x_RDRXCTL		equ 0x02F00 ; Receive DMA Control Register
-i8259x_SRRCTL		equ 0x01014 ; Split Receive Control Registers
+i8259x_SRRCTL		equ 0x02100 ; Split Receive Control Registers
 i8259x_RXCTRL		equ 0x03000 ; Receive Control Register
 i8259x_RXPBSIZE		equ 0x03C00 ; Receive Packet Buffer Size
 
@@ -610,7 +512,7 @@ i8259x_TXPBSIZE		equ 0x0CC00 ; Transmit Packet Buffer Size
 i8259x_RTTDCS		equ 0x04900 ; DCB Transmit Descriptor Plane Control and Status
 
 ; DCA Registers
-i8259x_DCA_RXCTRL	equ 0x0100C ; Rx DCA Control Register
+i8259x_DCA_RXCTRL	equ 0x02200 ; Rx DCA Control Register
 
 ; Security Registers
 i8259x_SECRXCTRL	equ 0x08D00 ; Security Rx Control
@@ -676,7 +578,7 @@ i8259x_STATUS_MASEN	equ 19 ; This is a status bit of the appropriate CTRL.PCIe M
 i8259x_CTRL_EXT_DRV_LOAD	equ 28 ; Driver loaded and the corresponding network interface is enabled
 
 ; RDRXCTL (Receive DMA Control Register, 0x02F00, RW) Bit Masks
-i8259x_RDRXCTL_CRCSTRIP	equ 0 ; Rx CRC Strip indication to the Rx DMA unit. Must be same as HLREG0.RXCRCSTRP
+i8259x_RDRXCTL_CRCSTRIP	equ 1 ; Rx CRC Strip indication to the Rx DMA unit. Must be same as HLREG0.RXCRCSTRP
 i8259x_RDRXCTL_DMAIDONE	equ 3 ; DMA Init Done - 1 when DMA init is done
 
 ; RXCTRL (Receive Control Register, 0x03000, RW) Bit Masks
