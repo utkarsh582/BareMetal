@@ -82,8 +82,8 @@ net_i8259x_reset_wait:
 	jnz net_i8259x_reset_wait	; Wait for it to read back as 0x0
 
 	; Wait 10ns
-	mov rax, 10000			
-	call b_delay			
+	mov rax, 10000
+	call b_delay
 
 	; Disable Interrupts again (4.6.3.1)
 	xor eax, eax
@@ -177,8 +177,8 @@ net_i8259x_reset_nextdesc:
 	; Enable Advanced RX descriptors
 	mov eax, [rsi+i8259x_SRRCTL]
 	and eax, 0xF1FFFFFF		; Clear bits 27:25 for DESCTYPE
-	or eax, 0x02000000		; Bits 27:25 = 001 for Advanced desc one buffer
-	bts eax, 28				; i8259x_SRRCTL_DROP_EN
+;	or eax, 0x02000000		; Bits 27:25 = 001 for Advanced desc one buffer
+	bts eax, 28			; i8259x_SRRCTL_DROP_EN
 	mov [rsi+i8259x_SRRCTL], eax
 	; Set up RX descriptor ring 0
 	mov rax, os_rx_desc
@@ -189,7 +189,6 @@ net_i8259x_reset_nextdesc:
 	mov [rsi+i8259x_RDLEN], eax
 	xor eax, eax
 	mov [rsi+i8259x_RDH], eax
-	; mov eax, i8259x_MAX_DESC - 1
 	mov [rsi+i8259x_RDT], eax
 	; Set bit 16 of CTRL_EXT (Last line in 4.6.7)
 	mov eax, [rsi+i8259x_CTRL_EXT]
@@ -202,10 +201,11 @@ net_i8259x_reset_nextdesc:
 	; Enable RX
 	mov eax, 1			; RXEN = 1
 	mov [rsi+i8259x_RXCTRL], eax	; Enable receive
-	
+
 	; Enable Multicast
 	mov eax, 0xFFFFFFFF
 	mov [rsi+i8259x_MTA], eax
+
 	; Enable the RX queue
 	mov eax, [rsi+i8259x_RXDCTL]
 	or eax, 0x02000000
@@ -233,7 +233,6 @@ net_i8259x_init_rx_enable_wait:
 ; 	mov eax, [rsi+i8259x_SECRXCTRL]
 ; 	btc eax, i8259x_SECRXCTRL_SECRX_DIS
 ; 	mov [rsi+i8259x_SECRXCTRL], eax
-
 
 	; Initialize transmit (4.6.8)
 	; Enable CRC offload and small packet padding
@@ -384,7 +383,7 @@ net_i8259x_poll:
 	mov rsi, [os_NetIOBaseMem]	; Load the base MMIO of the NIC
 
 	; Calculate the descriptor to read from
-	mov eax, [i8254x_rx_lasthead]
+	mov eax, [i8259x_rx_lasthead]
 	shl eax, 4			; Quick multiply by 16
 	add eax, 8			; Offset to bytes received
 	add rdi, rax			; Add offset to RDI
@@ -392,20 +391,20 @@ net_i8259x_poll:
 	xor ecx, ecx			; Clear RCX
 	mov cx, [rdi]			; Get the packet length
 	cmp cx, 0
-	je net_i8254x_poll_end		; No data? Bail out
+	je net_i8259x_poll_end		; No data? Bail out
 
 	xor eax, eax
 	stosq				; Clear the descriptor length and status
 
-	; Increment i8254x_rx_lasthead and the Receive Descriptor Tail
-	mov eax, [i8254x_rx_lasthead]
+	; Increment i8259x_rx_lasthead and the Receive Descriptor Tail
+	mov eax, [i8259x_rx_lasthead]
 	add eax, 1
-	and eax, i8254x_MAX_DESC - 1
-	mov [i8254x_rx_lasthead], eax
-	mov eax, [rsi+i8254x_RDT]	; Read the current Receive Descriptor Tail
+	and eax, i8259x_MAX_DESC - 1
+	mov [i8259x_rx_lasthead], eax
+	mov eax, [rsi+i8259x_RDT]	; Read the current Receive Descriptor Tail
 	add eax, 1			; Add 1 to the Receive Descriptor Tail
-	and eax, i8254x_MAX_DESC - 1
-	mov [rsi+i8254x_RDT], eax	; Write the updated Receive Descriptor Tail
+	and eax, i8259x_MAX_DESC - 1
+	mov [rsi+i8259x_RDT], eax	; Write the updated Receive Descriptor Tail
 
 	pop rax
 	pop rsi
@@ -427,7 +426,7 @@ i8259x_rx_lasthead: dd 0
 
 ; Constants
 i8259x_MAX_PKT_SIZE	equ 16384
-i8259x_MAX_DESC		equ 16		; Must be 16, 32, 64, 128, etc.
+i8259x_MAX_DESC		equ 4096		; Must be 16, 32, 64, 128, etc.
 
 ; Register list (All registers should be accessed as 32-bit values)
 
