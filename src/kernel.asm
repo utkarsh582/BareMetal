@@ -11,7 +11,7 @@ ORG 0x0000000000100000			; The kernel needs to be loaded at this address
 
 %DEFINE BAREMETAL_VER 'v1.0.0 (January 21, 2020)', 13, 'Copyright (C) 2008-2025 Return Infinity', 13, 0
 %DEFINE BAREMETAL_API_VER 1
-KERNELSIZE equ 16384			; Pad the kernel to this length
+KERNELSIZE equ 18 * 1024		; Pad the kernel to this length
 
 
 kernel_start:
@@ -24,8 +24,8 @@ align 16
 	dq b_output			; 0x0018
 	dq b_net_tx			; 0x0020
 	dq b_net_rx			; 0x0028
-	dq b_storage_read		; 0x0030
-	dq b_storage_write		; 0x0038
+	dq b_nvs_read			; 0x0030
+	dq b_nvs_write			; 0x0038
 	dq b_system			; 0x0040
 	dq b_user			; 0x0048
 
@@ -33,15 +33,10 @@ align 16
 start:
 	mov rsp, 0x10000		; Set the temporary stack
 
-	; Output BareMetal start message
-	mov rsi, msg_start
-	mov rcx, 15
-	call b_output
-
 	; System and driver initialization
 	call init_64			; After this point we are in a working 64-bit environment
-	call init_bus			; Initialize system bus
-	call init_storage		; Initialize storage
+	call init_bus			; Initialize system busses
+	call init_nvs			; Initialize non-volatile storage
 	call init_net			; Initialize network
 
 	; Output system ready message

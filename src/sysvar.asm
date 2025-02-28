@@ -11,10 +11,10 @@ newline:		db 13, 10, 0
 space:			db ' ', 0
 system_status_header:	db 'BareMetal v1.0.0', 0
 msg_start:		db 13, 10, '[ BareMetal ]'
-msg_init_64:		db 13, 10, '64      '
-msg_init_bus:		db 13, 10, 'bus     '
-msg_init_sto:		db 13, 10, 'storage '
-msg_init_net:		db 13, 10, 'network '
+msg_init_64:		db 13, 10, '64  '
+msg_init_bus:		db 13, 10, 'bus '
+msg_init_nvs:		db 13, 10, 'nvs '
+msg_init_net:		db 13, 10, 'net '
 msg_ready:		db 13, 10, 'system ready', 13, 10, 13, 10
 
 ; Memory addresses
@@ -29,10 +29,8 @@ sys_Pure64:		equ 0x0000000000005000	; 0x005000 -> 0x007FFF	12K Pure64 system dat
 
 						; 0x008000 -> 0x00FFFF	32K Free
 
-sys_pdl:		equ 0x0000000000010000	; 0x010000 -> 0x01FFFF	64K Page directory low (Maps up to 16GB)
-sys_pdh:		equ 0x0000000000020000	; 0x020000 -> 0x05FFFF	256K Page directory high (Maps up to 64GB)
-
-						; 0x060000 -> 0x09FFFF	256K Free
+sys_pdl:		equ 0x0000000000010000	; 0x010000 -> 0x01FFFF	64K Page directory low (Maps up to 16GB of 2MiB pages or 8TB of 1GiB pages)
+sys_pdh:		equ 0x0000000000020000	; 0x020000 -> 0x09FFFF	512K Page directory high (Maps up to 128GB)
 
 sys_ROM:		equ 0x00000000000A0000	; 0x0A0000 -> 0x0FFFFF	384K System ROM
 
@@ -43,31 +41,19 @@ os_SystemVariables:	equ 0x0000000000110000	; 0x110000 -> 0x11FFFF	64K System Var
 ; System memory
 bus_table:		equ 0x0000000000120000	; 0x120000 -> 0x12FFFF	64K Bus Table
 
-						; 0x130000 -> 0x13FFFF	64K Free
+; Non-volatile Storage memory
+os_nvs_mem:		equ 0x0000000000130000	; 0x130000 -> 0x15FFFF	192K NVS structures/buffers
 
-; Storage memory
-os_storage_mem:		equ 0x0000000000140000
-ahci_basemem:		equ 0x0000000000140000	; 0x140000 -> 0x16FFFF	192K AHCI Structures
-ahci_CLB:		equ 0x0000000000140000	; 0x140000 -> 0x147FFF	32K AHCI Command List Base (1K per port)
-ahci_FB:		equ 0x0000000000148000	; 0x148000 -> 0x167FFF	128K AHCI FIS Base (4K per port)
-ahci_CMD:		equ 0x0000000000168000	; 0x168000 -> 0x16FFFF	32K AHCI Commands
-os_nvme:		equ 0x0000000000170000	; 0x170000 -> 0x17FFFF	64K NVMe Structures
-os_nvme_asqb:		equ 0x0000000000170000	; 0x170000 -> 0x170FFF	4K Admin Submission Queue Base Address
-os_nvme_acqb:		equ 0x0000000000171000	; 0x171000 -> 0x171FFF	4K Admin Completion Queue Base Address
-os_nvme_iosqb:		equ 0x0000000000172000	; 0x172000 -> 0x172FFF	4K I/O Submission Queue Base Address
-os_nvme_iocqb:		equ 0x0000000000173000	; 0x173000 -> 0x173FFF	4K I/O Completion Queue Base Address
-os_nvme_CTRLID:		equ 0x0000000000174000	; 0x174000 -> 0x174FFF	4K Controller Identify Data
-os_nvme_ANS:		equ 0x0000000000175000	; 0x175000 -> 0x175FFF	4K Namespace Data
-os_nvme_NSID:		equ 0x0000000000176000	; 0x176000 -> 0x176FFF	4K Namespace Identify Data
-os_nvme_rpr:		equ 0x0000000000177000	; 0x177000 -> 0x177FFF	4K RPR2 space for 1024 entries
-
-						; 0x180000 -> 0x19FFFF	128K Free
+; USB memory
+os_usb_mem:		equ 0x0000000000160000	; 0x160000 -> 0x19FFFF	256K USB structures/buffers
 
 ; Network memory
-os_net_mem:		equ 0x00000000001A0000
+os_net_mem:		equ 0x00000000001A0000	; 0x1A0000 -> 0x1BFFFF	128K Network descriptors/buffers
 os_rx_desc:		equ 0x00000000001A0000	; 0x1A0000 -> 0x1A7FFF	32K Ethernet receive descriptors
 os_tx_desc:		equ 0x00000000001A8000	; 0x1A8000 -> 0x1AFFFF	32K Ethernet transmit descriptors
-os_PacketBuffers:	equ 0x00000000001B0000	;
+os_PacketBuffers:	equ 0x00000000001B0000	; 0x1B0000 -> 0x1BFFFF	64K Ethernet packet buffers
+
+						; 0x1C0000 -> 0x1EFFFF	192K Free
 
 ; Misc memory
 os_SMP:			equ 0x00000000001FF800	; SMP table. Each item is 8 bytes. (2KiB before the 2MiB mark, Room for 256 entries)
@@ -97,12 +83,13 @@ os_net_RXPackets:	equ os_SystemVariables + 0x0090
 os_hdd_BytesRead:	equ os_SystemVariables + 0x0098
 os_hdd_BytesWrite:	equ os_SystemVariables + 0x00A0
 os_NVMe_Base:		equ os_SystemVariables + 0x00A8
-os_storage_io:		equ os_SystemVariables + 0x00B0
-os_storage_id:		equ os_SystemVariables + 0x00B8
+os_nvs_io:		equ os_SystemVariables + 0x00B0
+os_nvs_id:		equ os_SystemVariables + 0x00B8
 os_screen_lfb:		equ os_SystemVariables + 0x00C0
 os_virtioblk_base:	equ os_SystemVariables + 0x00C8
 os_NetIOLength:		equ os_SystemVariables + 0x00D0
 os_MouseCallback:	equ os_SystemVariables + 0x00D8
+os_xHCI_Base:		equ os_SystemVariables + 0x00E0
 
 
 ; DD - Starting at offset 256, increments by 4
@@ -113,6 +100,7 @@ os_NVMeTotalLBA:	equ os_SystemVariables + 0x010C
 os_apic_ver:		equ os_SystemVariables + 0x0110
 os_HPET_Frequency:	equ os_SystemVariables + 0x0114
 os_ps2_mouse_packet:	equ os_SystemVariables + 0x0118
+os_xhci_int0_count:	equ os_SystemVariables + 0x011C	; Incremented on xHCI Interrupter 0
 
 
 ; DW - Starting at offset 512, increments by 2
@@ -120,7 +108,7 @@ os_NumCores:		equ os_SystemVariables + 0x0200
 os_CoreSpeed:		equ os_SystemVariables + 0x0202
 os_NetIOAddress:	equ os_SystemVariables + 0x0204
 os_NetLock:		equ os_SystemVariables + 0x0206
-os_StorageVar:		equ os_SystemVariables + 0x0208	; Bit 0 for NVMe, 1 for AHCI, 2 for ATA, 3 for Virtio Block
+os_nvsVar:		equ os_SystemVariables + 0x0208	; Bit 0 for NVMe, 1 for AHCI, 2 for ATA, 3 for Virtio Block
 os_screen_x:		equ os_SystemVariables + 0x020A
 os_screen_y:		equ os_SystemVariables + 0x020C
 os_screen_ppsl:		equ os_SystemVariables + 0x020E
@@ -146,8 +134,8 @@ os_NetIRQ:		equ os_SystemVariables + 0x0305	; Set to Interrupt line that NIC is 
 ;os_NetActivity_RX:	equ os_SystemVariables + 0x0307
 ;os_EthernetBuffer_C1:	equ os_SystemVariables + 0x0308	; Counter 1 for the Ethernet RX Ring Buffer
 ;os_EthernetBuffer_C2:	equ os_SystemVariables + 0x0309	; Counter 2 for the Ethernet RX Ring Buffer
-;os_StorageEnabled:	equ os_SystemVariables + 0x030A
-;os_StorageActivity:	equ os_SystemVariables + 0x030B
+;os_nvsEnabled:		equ os_SystemVariables + 0x030A
+;os_nvsActivity:	equ os_SystemVariables + 0x030B
 os_NVMeIRQ:		equ os_SystemVariables + 0x030C
 os_NVMeMJR:		equ os_SystemVariables + 0x030D
 os_NVMeMNR:		equ os_SystemVariables + 0x030E
@@ -174,12 +162,6 @@ align 4
 PxSSTS: times 32 dd 0
 
 ; Misc
-keylayoutlower:
-db 0x00, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 0x0e, 0, 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', 0x1c, 0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', 0x27, '`', 0, '\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0, 0, 0, ' ', 0
-keylayoutupper:
-db 0x00, 0, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', 0x0e, 0, 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', 0x1c, 0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', 0x22, '~', 0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, 0, 0, ' ', 0
-; 0e = backspace
-; 1c = enter
 tchar: db 0, 0
 
 

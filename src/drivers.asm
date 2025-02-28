@@ -10,17 +10,20 @@
 %include "drivers/apic.asm"
 %include "drivers/hpet.asm"
 %include "drivers/ioapic.asm"
-%include "drivers/pcie.asm"
-%include "drivers/pci.asm"
 %include "drivers/ps2.asm"
 %include "drivers/serial.asm"
 %include "drivers/virtio.asm"
 
+; Bus
+%include "drivers/bus/pcie.asm"
+%include "drivers/bus/pci.asm"
+%include "drivers/bus/xhci.asm"
+
 ; Storage
-%include "drivers/storage/nvme.asm"
-%include "drivers/storage/ahci.asm"
-%include "drivers/storage/virtio-blk.asm"
-%include "drivers/storage/ata.asm"
+%include "drivers/nvs/nvme.asm"
+%include "drivers/nvs/ahci.asm"
+%include "drivers/nvs/virtio-blk.asm"
+%include "drivers/nvs/ata.asm"
 
 ; Network
 %include "drivers/net/i8254x.asm"
