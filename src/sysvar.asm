@@ -92,6 +92,7 @@ os_MouseCallback:	equ os_SystemVariables + 0x00D8
 os_xHCI_Base:		equ os_SystemVariables + 0x00E0
 os_usb_evtoken:		equ os_SystemVariables + 0x00E8
 
+
 ; DD - Starting at offset 256, increments by 4
 os_HPETRate:		equ os_SystemVariables + 0x0100
 os_MemAmount:		equ os_SystemVariables + 0x0104	; in MiB
