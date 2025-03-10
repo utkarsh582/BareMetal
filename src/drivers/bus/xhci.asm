@@ -178,9 +178,10 @@ xhci_init_msix_msi_done:
 	shr eax, 16			; 16-bit version is in bits 31:16, shift to 15:0
 	cmp ax, 0x0100			; Verify it is at least v1.0
 	jl xhci_init_error
-	mov eax, [rsi+xHCI_HCSPARAMS1]	; Gather MaxSlots (bits 7:0)
-	and eax, 0x000000FF		; Keep bits 7:0
+	mov eax, [rsi+xHCI_HCSPARAMS1]	; Gather MaxSlots (bits 7:0) and MaxPort (31:24)
 	mov byte [xhci_maxslots], al
+	rol eax, 8
+	mov byte [xhci_maxport], al
 	xor eax, eax
 	mov al, [xhci_caplen]
 	add rax, rsi			; RAX points to base of Host Controller Operational Registers
@@ -234,16 +235,20 @@ xhci_init_32bytecsz:
 ;	jmp xhci_xecp_read
 ;xhci_xecp_end:
 
-	call xhci_reset			; Reset the controller
+	; Reset the controller
+	call xhci_reset
+
+	; Set flag that xHCI was enabled
+	or qword [os_SysConfEn], 1 << 5
 
 xhci_init_done:
 	pop rdx
 	pop rsi
-	
+
 	add rsi, 15
 	mov byte [rsi], 1		; Mark driver as installed in Bus Table
 	sub rsi, 15
-	
+
 	ret
 
 xhci_init_error:
@@ -260,19 +265,19 @@ xhci_reset:
 	push rax
 
 	; Halt the controller
-xhci_init_halt:
+xhci_reset_halt:
 	mov rsi, [xhci_op]		; xHCI Operational Registers Base
 	mov eax, [rsi+xHCI_USBCMD]	; Read current Command Register value
 	bt eax, 0			; Check RS (bit 0)
-	jnc xhci_init_halt_done		; If the bit was clear, proceed onward
+	jnc xhci_reset_halt_done	; If the bit was clear, proceed onward
 	btr eax, 0			; Clear RS (bit 0)
 	mov [rsi+xHCI_USBCMD], eax	; Write updated Command Register value
 	mov rax, 20000			; Wait 20ms (20000µs)
 	call b_delay
 	mov eax, [rsi+xHCI_USBSTS]	; Read Status Register
 	bt eax, 0			; Check HCHalted (bit 0) - it should be 1
-	jnc xhci_init_error		; Bail out if HCHalted wasn't cleared after 20ms
-xhci_init_halt_done:
+	jnc xhci_reset_error		; Bail out if HCHalted wasn't cleared after 20ms
+xhci_reset_halt_done:
 
 	; Clear memory controller will be using
 	mov rdi, os_usb_mem
@@ -281,7 +286,7 @@ xhci_init_halt_done:
 	rep stosq
 
 	; Reset the controller
-xhci_init_reset:
+xhci_reset_reset:
 	mov eax, [rsi+xHCI_USBCMD]	; Read current Command Register value
 	bts eax, 1			; Set HCRST (bit 1)
 	mov [rsi+xHCI_USBCMD], eax	; Write updated Command Register value
@@ -289,10 +294,10 @@ xhci_init_reset:
 	call b_delay
 	mov eax, [rsi+xHCI_USBSTS]	; Read Status Register
 	bt eax, 11			; Check CNR (bit 11)
-	jc xhci_init_error		; Bail out if CNR wasn't cleared after 100ms
+	jc xhci_reset_error		; Bail out if CNR wasn't cleared after 100ms
 	mov eax, [rsi+xHCI_USBCMD]	; Read current Command Register value
 	bt eax, 1			; Check HCRST (bit 1)
-	jc xhci_init_error		; Bail out if HCRST wasn't cleared after 100ms
+	jc xhci_reset_error		; Bail out if HCRST wasn't cleared after 100ms
 
 	; Configure the controller
 	mov rax, os_usb_DCI		; Load the address of the Device Context Index
@@ -315,27 +320,21 @@ xhci_init_reset:
 	stosq				; Store the address of the scratchpad
 	mov rcx, 8
 	mov rax, os_usb_DC0		; Start of the Device Context Entries
-xhci_store_DC:
+xhci_reset_build_DC:
 	stosq
 	add rax, 0x800			; 2KiB
 	dec rcx
-	jnz xhci_store_DC
+	jnz xhci_reset_build_DC
 
 	; Build scratchpad entries
 	mov rdi, os_usb_scratchpad
 	mov rax, os_usb_scratchpad
-	mov rcx, 16
-xhci_build_scratchpad:
+	mov rcx, 4			; Create 4 4KiB scratchpad entries
+xhci_reset_build_scratchpad:
 	add rax, 4096
 	stosq
 	dec rcx
-	jnz xhci_build_scratchpad
-
-	; Build entries in the Command Ring
-	; Each TRB in the Command Ring is 16 bytes
-	; Build 8 entries for now. Last one is a link to the first
-	; mov rdi, os_usb_CR
-	; TODO Create the link TRB
+	jnz xhci_reset_build_scratchpad
 
 	; Configure Segment Tables
 	; ┌──────────────────────────────────────┐
@@ -398,8 +397,11 @@ xhci_build_scratchpad:
 	mov eax, 0x05			; Set bit 0 (RS) and bit 2 (INTE)
 	mov [rsi+xHCI_USBCMD], eax
 
-	; Enumerate USB devices
-	call xhci_enumerate_devices
+	; Verify HCHalted is clear
+xhci_reset_check_start:
+	mov eax, [rsi+xHCI_USBSTS]	; Read Status Register
+	bt eax, 0			; Check HCHalted (bit 0) - it should be 0
+	jc xhci_reset_check_start
 
 xhci_reset_done:
 	pop rax
@@ -427,22 +429,26 @@ xhci_enumerate_devices:
 
 	; Check the available ports and reset them
 	xor ecx, ecx			; Slot counter
-	xor edx, edx			; Max slots
-	mov dl, byte [xhci_maxslots]
+	xor edx, edx			; Max ports
+	mov dl, byte [xhci_maxport]
 xhci_check_next:
 	mov ebx, 0x400			; Offset to start of Port Registers
 	shl ecx, 4			; Quick multiply by 16
 	add ebx, ecx			; Add offset to EBX
 	shr ecx, 4			; Quick divide by 16
-	mov eax, [rsi+rbx]		; Load PORTSC
+	mov eax, [rsi+rbx]		; Read PORTSC
 	bt eax, 0			; Current Connect Status
 	jnc xhci_reset_skip
 	bts eax, 4			; Port Reset
-	mov [rsi+rbx], eax
+	mov [rsi+rbx], eax		; Write PORTSC
 xhci_reset_skip:
 	inc ecx
 	cmp ecx, edx
 	jne xhci_check_next
+
+	; Wait for USB devices to be ready
+	mov eax, 100000
+	call b_delay
 
 	; At this point the event ring should contain some port status change event entries
 	; They should appear as follows:
@@ -452,68 +458,57 @@ xhci_reset_skip:
 	; dword 2 - Completion code (31:24)
 	; dword 3 - Type 34 (15:10), C (0)
 
-	mov eax, 100000
-	call b_delay
-
-;	; Check Event ring for xHCI_ETRB_PSC and gather enabled ports
-;	xor ecx, ecx
-;	mov rdi, xhci_portlist
-;	mov rsi, os_usb_ERS
-;	sub rsi, 16
-;xhci_check_port:
-;	add rsi, 16
-;	mov eax, [rsi+12]		; Load dword 3
-;	shr eax, 10			; Shift Type to AL
-;	cmp al, 0			; End of list
-;	je xhci_check_port_end
-;	cmp al, xHCI_ETRB_PSC
-;	je xhci_check_port_store
-;	jmp xhci_check_port	
-;xhci_check_port_store:
-;	inc cl
-;	mov al, [rsi+3]
-;	stosb
-;	jmp xhci_check_port
-;xhci_check_port_end:
-;	mov byte [xhci_portcount], cl
-
-	; Check Port Status registers for enabled devices with a set speed
-	xor ecx, ecx			; Slot counter
-	xor edx, edx			; Max slots
-	mov dl, byte [xhci_maxslots]
+	; Check Event ring for xHCI_ETRB_PSC and gather enabled ports
+	xor ecx, ecx
 	mov rdi, xhci_portlist
-xhci_check_port_next:
-	dec edx
-	cmp edx, 0
-	jz xhci_check_port_done		; Bail out if we've checked all ports
-	mov ebx, 0x400			; Offset to start of Port Registers
-	shl ecx, 4			; Quick multiply by 16
-	add ebx, ecx			; Add offset to EBX
-	shr ecx, 4			; Quick divide by 16
-	mov eax, [rsi+rbx]		; Load PORTSC
-	and eax, 0x00003C00
-	cmp eax, 0
-	je xhci_check_port_skip
-xhci_check_port_found:
-	sub ebx, 0x400			; Subtract Offset
-	shr ebx, 4			; Quick divide by 16
-	add ebx, 1			; Add 1 as ports start at 1
-	mov eax, ebx
+	mov rsi, os_usb_ERS
+	sub rsi, 16
+xhci_check_port:
+	add rsi, 16
+	mov eax, [rsi+12]		; Load dword 3
+	shr eax, 10			; Shift Type to AL
+	cmp al, 0			; End of list
+	je xhci_check_port_end
+	cmp al, xHCI_ETRB_PSC
+	je xhci_check_port_store
+	jmp xhci_check_port
+xhci_check_port_store:
+	inc cl
+	mov al, [rsi+3]
 	stosb
-	add byte [xhci_portcount], 1	; Increment the port count
-xhci_check_port_skip:
-	inc ecx
-	jmp xhci_check_port_next
-xhci_check_port_done:
+	jmp xhci_check_port
+xhci_check_port_end:
+	mov byte [xhci_portcount], cl
 
 xhci_search_devices:
 
 	; Check that at least 1 port was enabled
 	cmp byte [xhci_portcount], 0
-	je xhci_init_done		; In no active ports then bail out
+	je xhci_enumerate_devices_end	; If no active ports then bail out
 
 	; At this point xhci_portcount contains the number of activated ports
 	; and xhci_portlist is a list of the port numbers
+
+	; Clear Transfer and Event ring (in case this xhci_search_devices is called more than once)
+	mov rdi, os_usb_TR0
+	mov ecx, 512
+	xor eax, eax
+	rep stosq
+
+	; TRB for Enable Slot
+	; ┌───────────────────────────────────────────────────────────────────────────────────────────────┐
+	; |31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 09 08 07 06 05 04 03 02 01 00|
+	; ├───────────────────────────────────────────────────────────────────────────────────────────────┤
+	; | Zero                                                                                          |
+	; ├───────────────────────────────────────────────────────────────────────────────────────────────┤
+	; | Zero                                                                                          |
+	; ├───────────────────────────────────────────────────────────────────────────────────────────────┤
+	; | Zero                                                                                          |
+	; ├───────────────────────────────────────────────┬─────────────────┬──────────────────────────┬──┤
+	; | Zero                                          | 9               | Reserved Zero            |C |
+	; └───────────────────────────────────────────────┴─────────────────┴──────────────────────────┴──┘
+	; Ex:
+	;	0x00000000 0x00000000 0x0000000 0x00002401
 
 	; Build a TRB for Enable Slot in the Command Ring
 	mov rdi, os_usb_CR
@@ -528,7 +523,6 @@ xhci_search_devices:
 	bts eax, 0			; Cycle Bit
 	stosd				; Store dword 3
 	add qword [xhci_croff], 16
-	; 0x00000000 0x00000000 0x0000000 0x00002401
 
 	; Ring the Doorbell for the Command Ring
 	xor eax, eax
@@ -536,42 +530,33 @@ xhci_search_devices:
 	call xhci_ring_doorbell
 
 	; Slot Enable Command Event TRB
-	; ┌──────────────────────────────────────┐
-	; | 31    24 23        15      10 9   1 0|
-	; ├──────────────────────────────────────┤
-	; |     Address of Enable Slot TRB Lo    |
-	; ├──────────────────────────────────────┤
-	; |     Address of Enable Slot TRB Hi    |
-	; ├─────────┬────────────────────────────┤
-	; |CompCode |          RsvdZ             | 
-	; ├─────────┴────────────┬───────┬─────┬─┤
-	; | Slot ID |    RsvdZ   |   33  |RsvdZ|C|
-	; └─────────┴────────────┴───────┴─────┴─┘
+	; ┌───────────────────────────────────────────────────────────────────────────────────────────────┐
+	; |31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 09 08 07 06 05 04 03 02 01 00|
+	; ├───────────────────────────────────────────────────────────────────────────────────────────────┤
+	; | Address of Enable Slot TRB Lo                                                                 |
+	; ├───────────────────────────────────────────────────────────────────────────────────────────────┤
+	; | Address of Enable Slot TRB Hi                                                                 |
+	; ├───────────────────────┬───────────────────────────────────────────────────────────────────────┤
+	; | CompCode              | Reserved Zero                                                         |
+	; ├───────────────────────┴───────────────────────┬─────────────────┬──────────────────────────┬──┤
+	; | Slot ID               | Reserved Zero         | 33              | Reserved Zero            |C |
+	; └───────────────────────┴───────────────────────┴─────────────────┴──────────────────────────┴──┘
+	; Ex:
+	;	0x00690000 0x00000000 0x01000000 0x01008401
 
-	; TODO - Check Event ring for the Completion Code of the TRB that was sent
-	; Look for the Address of the TRB
-	; 0x00690000 0x00000000 0x01000000 0x01008401
-
-	mov eax, 100000
-	call b_delay
-
+	; Check result in event ring
 	pop rbx				; Restore the Address of the Enable Slot command
-	mov rsi, os_usb_ERS
-loadnext:
-	lodsq
-	cmp rax, 0
-	je xhci_init_error
-	cmp rax, rbx
-	jne loadnext
-	add rsi, 4
-	lodsd				; EAX contains the slot ID in bits 31:24
-	shr eax, 24
+	call xhci_check_command_event	; Check for the event and return result in RAX
+
+	; Gather Slot ID from event
+	; Todo - check CompCode was 0x01
+	shr rax, 24
 	mov [currentslot], al
 
-	; Clear the 4KiB IDC
+	; Clear the IDC (Maximum of 2112 bytes)
 	mov rdi, os_usb_IDC
 	xor eax, eax
-	mov ecx, 4096 / 8
+	mov ecx, 264			; 2112 / 8
 	rep stosq
 
 	; Build the Input Context (6.2.5)
@@ -628,6 +613,7 @@ loadnext:
 	; Build a TRB for Set Address in the Command Ring
 	mov rdi, os_usb_CR
 	add rdi, [xhci_croff]
+	push rdi
 	mov rax, os_usb_IDC		; Address of the Input Context
 	stosq				; dword 0 & 1
 	xor eax, eax			; Reserved
@@ -650,24 +636,29 @@ loadnext:
 	call xhci_ring_doorbell
 
 	; Set Address Command Event TRB
-	; ┌──────────────────────────────────────┐
-	; | 31    24 23        15      10 9   1 0|
-	; ├──────────────────────────────────────┤
-	; |      Address of Input Context Lo     |
-	; ├──────────────────────────────────────┤
-	; |      Address of Input Context Hi     |
-	; ├─────────┬────────────────────────────┤
-	; |CompCode |          RsvdZ             | 
-	; ├─────────┴────────────┬───────┬─────┬─┤
-	; | Slot ID |    RsvdZ   |   33  |RsvdZ|C|
-	; └─────────┴────────────┴───────┴─────┴─┘
-	; 0x XX XX 84 01
+	; ┌───────────────────────────────────────────────────────────────────────────────────────────────┐
+	; |31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 09 08 07 06 05 04 03 02 01 00|
+	; ├───────────────────────────────────────────────────────────────────────────────────────────────┤
+	; | Address of Input Context Lo                                                                   |
+	; ├───────────────────────────────────────────────────────────────────────────────────────────────┤
+	; | Address of Input Context Hi                                                                   |
+	; ├───────────────────────┬───────────────────────────────────────────────────────────────────────┤
+	; | CompCode              | Reserved Zero                                                         |
+	; ├───────────────────────┴───────────────────────┬─────────────────┬──────────────────────────┬──┤
+	; | Slot ID               | Reserved Zero         | 33              | Reserved Zero            |C |
+	; └───────────────────────┴───────────────────────┴─────────────────┴──────────────────────────┴──┘
+	; Ex:
+	;	0x00XXXXXX 0x00000000 0x01000000 0x01008401
 
-	; TODO - Check Event ring for the Completion Code of the TRB that was sent
-	; Look for the Address of the TRB
+	; Check result in event ring
+	pop rbx				; Restore the Address of the Enable Slot command
+	call xhci_check_command_event
 
-	mov eax, 100000
-	call b_delay
+	; Clear os_usb_data0
+	mov rdi, os_usb_data0
+	xor eax, eax
+	mov ecx, 32			; 256 bytes
+	rep stosq
 
 	; Add TRBs to Transfer ring
 	mov rdi, os_usb_TR0
@@ -697,12 +688,13 @@ loadnext:
 	mov eax, 0x00001013		; TRB Type 4, CH, ENT, C
 	stosd				; dword 3 - DIR (16), TRB Type (15:10), IOC (5), CH (4), ENT (1), C (0)
 	; Event Data
-	add qword [xhci_evtoken], 1
-	mov rax, [xhci_evtoken]
+	add qword [os_usb_evtoken], 1
+	mov rax, [os_usb_evtoken]
+	push rax
 	stosq				; dword 0 & 1 - Data Buffer (63:0)
 	xor eax, eax
 	stosd				; dword 2 - Interrupter Target (31:22)
-	mov eax, 0x00001C01		; TRB Type 7, C
+	mov eax, 0x00001C21		; TRB Type 7, IOC, C
 	stosd				; dword 3 - TRB Type (15:10), IOC (5), Cycle (0)
 
 	; Ring the doorbell for current slot
@@ -711,14 +703,16 @@ loadnext:
 	mov cl, [currentslot]
 	call xhci_ring_doorbell
 
-	mov eax, 100000
-	call b_delay
+	; Check result in event ring
+	xor eax, eax
+	pop rbx				; Restore the Address of the Enable Slot command
+	call xhci_check_command_event
 
 	; Check first 8 bytes of Device Descriptor
 	; Example from QEMU keyboard
 	;
 	; 0000: 0x12 0x01 0x00 0x02 0x00 0x00 0x00 0x40
-	; 
+	;
 	; 1) Update Endpoint Context 0 Max Packet Size (to 0x40 in the case above)
 
 	push rdi
@@ -741,6 +735,7 @@ loadnext:
 	; Build a TRB for Evaluate Context in the Command Ring
 	mov rdi, os_usb_CR
 	add rdi, [xhci_croff]
+	push rdi
 	mov rax, os_usb_IDC		; Address of the Input Context
 	stosq				; dword 0 & 1
 	xor eax, eax
@@ -759,15 +754,13 @@ loadnext:
 	xor ecx, ecx
 	call xhci_ring_doorbell
 
-	mov eax, 100000
-	call b_delay
+	; Check result in event ring
+	pop rbx				; Restore the Address of the Evaluate Context command
+	call xhci_check_command_event
 
 xhci_skip_update_idc:
 
 	pop rdi
-
-	; Todo - Check result in event ring
-	; 0xXXXXXXXX 0xXXXXXXXX 0x0100000 0x01008401
 
 	; Request full data from Device Descriptor
 
@@ -798,12 +791,13 @@ xhci_skip_update_idc:
 	mov eax, 0x00001013		; TRB Type 4, CH, ENT, C
 	stosd				; dword 3 - DIR (16), TRB Type (15:10), IOC (5), CH (4), ENT (1), C (0)
 	; Event Data
-	add qword [xhci_evtoken], 1
-	mov rax, [xhci_evtoken]
+	add qword [os_usb_evtoken], 1
+	mov rax, [os_usb_evtoken]
+	push rax
 	stosq				; dword 0 & 1 - Data Buffer (63:0)
-	xor eax, eax			; Interrupter 0 (31:22)
+	xor eax, eax
 	stosd				; dword 2 - Interrupter Target (31:22)
-	mov eax, 0x00001C01		; TRB Type 7, C
+	mov eax, 0x00001C21		; TRB Type 7, IOC, C
 	stosd				; dword 3 - TRB Type (15:10), IOC (5), Cycle (0)
 
 	; Ring the doorbell for current slot
@@ -811,6 +805,11 @@ xhci_skip_update_idc:
 	xor ecx, ecx
 	mov cl, [currentslot]
 	call xhci_ring_doorbell
+
+	; Check result in event ring
+	xor eax, eax
+	pop rbx				; Restore the Address of the Enable Slot command
+	call xhci_check_command_event
 
 	; TODO - Check full Device Descriptor
 	; Example from QEMU keyboard
@@ -839,9 +838,6 @@ xhci_skip_update_idc:
 	; Build a table
 	; Slot / Vendor / Product / Class / Protocol
 
-	mov eax, 100000
-	call b_delay
-
 	; Request 9 bytes from Configuration Descriptor
 
 	; Setup Stage
@@ -868,12 +864,13 @@ xhci_skip_update_idc:
 	mov eax, 0x00001013		; TRB Type 4, CH, ENT, C
 	stosd				; dword 3 - DIR (16), TRB Type (15:10), IOC (5), CH (4), ENT (1), C (0)
 	; Event Data
-	add qword [xhci_evtoken], 1
-	mov rax, [xhci_evtoken]
+	add qword [os_usb_evtoken], 1
+	mov rax, [os_usb_evtoken]
+	push rax
 	stosq				; dword 0 & 1 - Data Buffer (63:0)
-	xor eax, eax			; Interrupter 0 (31:22)
+	xor eax, eax
 	stosd				; dword 2 - Interrupter Target (31:22)
-	mov eax, 0x00001C01		; TRB Type 7, C
+	mov eax, 0x00001C21		; TRB Type 7, IOC, C
 	stosd				; dword 3 - TRB Type (15:10), IOC (5), Cycle (0)
 
 	; Ring the doorbell for current slot
@@ -882,8 +879,10 @@ xhci_skip_update_idc:
 	mov cl, [currentslot]
 	call xhci_ring_doorbell
 
-	mov eax, 100000
-	call b_delay
+	; Check result in event ring
+	xor eax, eax
+	pop rbx				; Restore the Address of the Enable Slot command
+	call xhci_check_command_event
 
 	; Check TotalLength
 	xor ebx, ebx
@@ -916,12 +915,13 @@ xhci_skip_update_idc:
 	mov eax, 0x00001013		; TRB Type 4, CH, ENT, C
 	stosd				; dword 3 - DIR (16), TRB Type (15:10), IOC (5), CH (4), ENT (1), C (0)
 	; Event Data
-	add qword [xhci_evtoken], 1
-	mov rax, [xhci_evtoken]
+	add qword [os_usb_evtoken], 1
+	mov rax, [os_usb_evtoken]
+	push rax
 	stosq				; dword 0 & 1 - Data Buffer (63:0)
-	xor eax, eax			; Interrupter 0 (31:22)
+	xor eax, eax
 	stosd				; dword 2 - Interrupter Target (31:22)
-	mov eax, 0x00001C01		; TRB Type 7, C
+	mov eax, 0x00001C21		; TRB Type 7, IOC, C
 	stosd				; dword 3 - TRB Type (15:10), IOC (5), Cycle (0)
 
 	; Ring the doorbell for current slot
@@ -929,6 +929,11 @@ xhci_skip_update_idc:
 	xor ecx, ecx
 	mov cl, [currentslot]
 	call xhci_ring_doorbell
+
+	; Check result in event ring
+	xor eax, eax
+	pop rbx				; Restore the Address of the Enable Slot command
+	call xhci_check_command_event
 
 	; TODO - Check Configuration Descriptor
 	; Example from QEMU keyboard
@@ -1002,9 +1007,6 @@ xhci_skip_update_idc:
 	; Check Attribute (offset 3) - Should be 0x03 for Interrupt
 	; Check MaxPacketSize (offset 4) - 0x0008 = keyboard (ideally), 0x0004 = mouse (ideally)
 
-	mov eax, 100000
-	call b_delay
-
 	; Verify that a keyboard was found
 	mov rax, os_usb_data0
 	add rax, 0x20			; Offset to Configuration Descriptor
@@ -1019,6 +1021,7 @@ xhci_skip_update_idc:
 	; Build a TRB for Disable Slot in the Command Ring
 	mov rdi, os_usb_CR
 	add rdi, [xhci_croff]
+	push rdi
 	xor eax, eax
 	stosd				; Store dword 0
 	stosd				; Store dword 1
@@ -1030,14 +1033,15 @@ xhci_skip_update_idc:
 	stosd				; Store dword 3
 	add qword [xhci_croff], 16
 	; 0x0000000000000000 0x0000000 0x01002801
-	
+
 	; Ring the Doorbell for the Command Ring
 	xor eax, eax
 	xor ecx, ecx
 	call xhci_ring_doorbell
 
-	mov eax, 100000
-	call b_delay
+	; Check result in event ring
+	pop rbx				; Restore the Address of the Enable Slot command
+	call xhci_check_command_event
 
 	; Shift the port list
 	push rsi
@@ -1070,15 +1074,16 @@ foundkeyboard:
 	xor eax, eax
 	stosq				; dword 0 & 1 - Reserved Zero
 	stosd				; dword 2 - Interrupter Target (31:22)
-	mov eax, 0x00011013		; DIR, TRB Type 4, ENT, C
+	mov eax, 0x00001013		; TRB Type 4, CH, ENT, C
 	stosd				; dword 3 - DIR (16), TRB Type (15:10), IOC (5), CH (4), ENT (1), C (0)
 	; Event Data
-	add qword [xhci_evtoken], 1
-	mov rax, [xhci_evtoken]
+	add qword [os_usb_evtoken], 1
+	mov rax, [os_usb_evtoken]
+	push rax
 	stosq				; dword 0 & 1 - Data Buffer (63:0)
-	xor eax, eax			; Interrupter 0 (31:22)
+	xor eax, eax
 	stosd				; dword 2 - Interrupter Target (31:22)
-	mov eax, 0x00001C01		; TRB Type 7, C
+	mov eax, 0x00001C21		; TRB Type 7, IOC, C
 	stosd				; dword 3 - TRB Type (15:10), IOC (5), Cycle (0)
 
 	; Ring the doorbell for current slot
@@ -1087,8 +1092,10 @@ foundkeyboard:
 	mov cl, [currentslot]
 	call xhci_ring_doorbell
 
-	mov eax, 100000
-	call b_delay
+	; Check result in event ring
+	xor eax, eax
+	pop rbx				; Restore the Address of the Enable Slot command
+	call xhci_check_command_event
 
 	; Send Set protocol
 
@@ -1105,8 +1112,17 @@ foundkeyboard:
 	xor eax, eax
 	stosq				; dword 0 & 1 - Reserved Zero
 	stosd				; dword 2 - Interrupter Target (31:22)
-	mov eax, 0x00011001		; DIR, TRB Type 4, C
+	mov eax, 0x00001013		; TRB Type 4, CH, ENT, C
 	stosd				; dword 3 - DIR (16), TRB Type (15:10), IOC (5), CH (4), ENT (1), C (0)
+	; Event Data
+	add qword [os_usb_evtoken], 1
+	mov rax, [os_usb_evtoken]
+	push rax
+	stosq				; dword 0 & 1 - Data Buffer (63:0)
+	xor eax, eax
+	stosd				; dword 2 - Interrupter Target (31:22)
+	mov eax, 0x00001C21		; TRB Type 7, IOC, C
+	stosd				; dword 3 - TRB Type (15:10), IOC (5), Cycle (0)
 
 	; Ring the doorbell for current slot
 	mov eax, 1			; EPID 1
@@ -1114,8 +1130,10 @@ foundkeyboard:
 	mov cl, [currentslot]
 	call xhci_ring_doorbell
 
-	mov eax, 100000
-	call b_delay
+	; Check result in event ring
+	xor eax, eax
+	pop rbx				; Restore the Address of the Enable Slot command
+	call xhci_check_command_event
 
 	; Send SET_IDLE
 
@@ -1132,8 +1150,17 @@ foundkeyboard:
 	xor eax, eax
 	stosq				; dword 0 & 1 - Reserved Zero
 	stosd				; dword 2 - Interrupter Target (31:22)
-	mov eax, 0x00011001		; DIR, TRB Type 4, C
+	mov eax, 0x00001013		; TRB Type 4, CH, ENT, C
 	stosd				; dword 3 - DIR (16), TRB Type (15:10), IOC (5), CH (4), ENT (1), C (0)
+	; Event Data
+	add qword [os_usb_evtoken], 1
+	mov rax, [os_usb_evtoken]
+	push rax
+	stosq				; dword 0 & 1 - Data Buffer (63:0)
+	xor eax, eax
+	stosd				; dword 2 - Interrupter Target (31:22)
+	mov eax, 0x00001C21		; TRB Type 7, IOC, C
+	stosd				; dword 3 - TRB Type (15:10), IOC (5), Cycle (0)
 
 	; Ring the doorbell for current slot
 	mov eax, 1			; EPID 1
@@ -1141,8 +1168,10 @@ foundkeyboard:
 	mov cl, [currentslot]
 	call xhci_ring_doorbell
 
-	mov eax, 100000
-	call b_delay
+	; Check result in event ring
+	xor eax, eax
+	pop rbx				; Restore the Address of the Enable Slot command
+	call xhci_check_command_event
 
 	; Update Input Context
 	mov rdi, os_usb_IDC
@@ -1175,6 +1204,7 @@ foundkeyboard:
 	; Build a TRB for Evaluate Context in the Command Ring
 	mov rdi, os_usb_CR
 	add rdi, [xhci_croff]
+	push rdi
 	mov rax, os_usb_IDC		; Address of the Input Context
 	stosq				; dword 0 & 1
 	xor eax, eax
@@ -1193,12 +1223,14 @@ foundkeyboard:
 	xor ecx, ecx
 	call xhci_ring_doorbell
 
-	mov eax, 100000
-	call b_delay
+	; Check result in event ring
+	pop rbx				; Restore the Address of the Enable Slot command
+	call xhci_check_command_event
 
 	; Build a TRB for Configure Endpoint in the Command Ring
 	mov rdi, os_usb_CR
 	add rdi, [xhci_croff]
+	push rdi
 	mov rax, os_usb_IDC		; Address of the Input Context
 	stosq				; dword 0 & 1
 	xor eax, eax
@@ -1217,11 +1249,10 @@ foundkeyboard:
 	xor ecx, ecx
 	call xhci_ring_doorbell
 
-	; Todo - Check result in event ring
+	; Check result in event ring
 	; 0xXXXXXXXX 0xXXXXXXXX 0x0100000 0x01008401
-
-	mov eax, 100000
-	call b_delay
+	pop rbx				; Restore the Address of the Enable Slot command
+	call xhci_check_command_event
 
 	mov al, [currentslot]
 	mov [keyboardslot], al
@@ -1238,8 +1269,8 @@ foundkeyboard:
 	mov eax, 0x00000413		; TRB Type 1, CH, ENT, C
 	stosd				; dword 3 - TRB Type (15:10), CH (4), ENT (1), Cycle (0)
 	; Event Data
-	add qword [xhci_evtoken], 1
-	mov rax, [xhci_evtoken]
+	add qword [os_usb_evtoken], 1
+	mov rax, [os_usb_evtoken]
 	stosq				; dword 0 & 1 - Data Buffer Pointer (63:0)
 	mov eax, 0x00400000		; Interrupter Target 1
 	stosd				; dword 2 - Interrupter Target (31:22)
@@ -1252,6 +1283,7 @@ foundkeyboard:
 	mov cl, [keyboardslot]
 	call xhci_ring_doorbell
 
+xhci_enumerate_devices_end:
 	pop rax
 	pop rbx
 	pop rcx
@@ -1277,6 +1309,35 @@ xhci_ring_doorbell:
 
 	pop rcx
 	pop rdi
+	ret
+; -----------------------------------------------------------------------------
+
+
+; -----------------------------------------------------------------------------
+; xhci_check_command_event - Gather return data for a command
+; RBX = Address of Command / Token
+; RCX = Event ring
+xhci_check_command_event:
+	push rsi
+	push rcx
+	mov rsi, os_usb_ERS	; Event segment for Command Ring
+	shl rcx, 12		; Quick multiply by 4096
+	add rsi, rcx
+load_event:
+	mov rax, [rsi]
+	cmp rax, 0
+	jne compare
+	sub rsi, 16
+	jmp load_event
+compare:
+	cmp rax, rbx
+	je found_event
+	add rsi, 16
+	jmp load_event
+found_event:
+	mov rax, [rsi+8]	; Load the result
+	pop rcx
+	pop rsi
 	ret
 ; -----------------------------------------------------------------------------
 
@@ -1362,8 +1423,8 @@ xhci_int1:
 	mov eax, 0x00000413		; TRB Type 1, CH, ENT, C
 	stosd				; dword 3 - TRB Type (15:10), CH (4), ENT (1), Cycle (0)
 	; Event Data
-	add qword [xhci_evtoken], 1
-	mov rax, [xhci_evtoken]
+	add qword [os_usb_evtoken], 1
+	mov rax, [os_usb_evtoken]
 	stosq				; dword 0 & 1 - Data Buffer Pointer (63:0)
 	mov eax, 0x00400000		; Interrupter Target 1
 	stosd				; dword 2 - Interrupter Target (31:22)
@@ -1434,7 +1495,6 @@ xhci_op:	dq 0			; Start of Operational Registers
 xhci_db:	dq 0			; Start of Doorbell Registers
 xhci_rt:	dq 0			; Start of Runtime Registers
 xhci_croff:	dq 0
-xhci_evtoken:	dq 0
 xhci_csz:	dd 32			; Default Context Size
 xhci_portlist:	times 32 db 0x00
 xhci_portcount:	db 0
@@ -1442,6 +1502,7 @@ currentslot:	db 0
 keyboardslot:	db 0
 xhci_caplen:	db 0
 xhci_maxslots:	db 0
+xhci_maxport:	db 0
 
 ; xHCI Memory (256K = 0x0 - 0x3FFFF)
 os_usb_DCI:		equ os_usb_mem + 0x0		; 2K Device Context Index

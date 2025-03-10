@@ -120,6 +120,8 @@ dw 0x0000
 dw 0x8259		; Driver ID
 dw 0x8086		; Vendor ID
 dw 0x1560		; X540T1
+dw 0x10FB       ; 82599ES
+dw 0x1572       ; XL710
 dw 0x0000
 
 ; Realtek 816x/811x Gigabit Ethernet
