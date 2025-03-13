@@ -177,7 +177,7 @@ net_i8259x_reset_nextdesc:
 	; Enable Advanced RX descriptors
 	mov eax, [rsi+i8259x_SRRCTL]
 	and eax, 0xF1FFFFFF		; Clear bits 27:25 for DESCTYPE
-;	or eax, 0x02000000		; Bits 27:25 = 001 for Advanced desc one buffer
+	or eax, 0x02000000		; Bits 27:25 = 001 for Advanced desc one buffer
 	bts eax, 28			; i8259x_SRRCTL_DROP_EN
 	mov [rsi+i8259x_SRRCTL], eax
 	; Set up RX descriptor ring 0
@@ -385,14 +385,25 @@ net_i8259x_poll:
 	; Calculate the descriptor to read from
 	mov eax, [i8259x_rx_index]
 	shl eax, 4			; Quick multiply by 16
-	add eax, 8			; Offset to bytes received
+	
+	; Legacy Descriptor Write back Length
+	; add eax, 8			; Offset to bytes received
+	
 	add rdi, rax			; Add offset to RDI
+	
 	; Todo: read all 64 bits. check status bit for DD
 	xor ecx, ecx			; Clear RCX
-	mov cx, [rdi]			; Get the packet length
+	; mov cs, [rdi]			; Get the Packet Length
+	
+	; For Advance Descriptor length is at 12 offset
+	mov cx, [rdi+12]			; Get the Packet length
 	cmp cx, 0
 	je net_i8259x_poll_end		; No data? Bail out
 
+	; For Advance Descriptors we need to reassing Buffer Address due to Write back
+	mov eax, os_PacketBuffers
+	stosq
+	
 	xor eax, eax
 	stosq				; Clear the descriptor length and status
 
