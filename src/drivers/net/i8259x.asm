@@ -194,9 +194,20 @@ net_i8259x_reset_nextdesc:
 	mov eax, [rsi+i8259x_CTRL_EXT]
 	bts eax, 16
 	mov [rsi+i8259x_CTRL_EXT], eax
+	; Enable DCA in CTRL register
+	mov eax, [rsi+i8259x_DCA_CTRL]
+	or eax, 1                    ; Enable DCA
+	mov [rsi+i8259x_DCA_CTRL], eax
+	; Get the CPU ID dynamically
+	mov eax, 1                   ; CPUID function 1
+	cpuid
+	shr ebx, 24                  ; Extract APIC ID (CPU ID) from EBX
+	mov ecx, ebx                 ; Save CPU ID in ECX
 	; Clear bit 12 of DCA_RXCTRL (Last line in 4.6.7)
 	mov eax, [rsi+i8259x_DCA_RXCTRL]
 	btc eax, 12
+	shl ecx, 24
+	or eax, ecx          ; Set CPU ID (bit 24:31)
 	mov [rsi+i8259x_DCA_RXCTRL], eax
 	; Enable RX
 	mov eax, 1			; RXEN = 1
@@ -382,20 +393,30 @@ net_i8259x_poll:
 	mov rdi, os_rx_desc
 	mov rsi, [os_NetIOBaseMem]	; Load the base MMIO of the NIC
 
+	; Legacy Descriptor
+; Legacy_Descriptor:
+; 	; Calculate the descriptor to read from
+; 	mov eax, [i8259x_rx_index]
+; 	shl eax, 4			; Quick multiply by 16
+; 	add eax, 8			; Offset to bytes received
+; 	add rdi, rax			; Add offset to RDI
+	
+; 	; Todo: read all 64 bits. check status bit for DD
+; 	xor ecx, ecx			; Clear RCX
+; 	mov cx, [rdi]			; Get the Packet length
+; 	cmp cx, 0
+; 	je net_i8259x_poll_end		; No data? Bail out
+
+
+; 	For Advance Descriptors we need to reassing Buffer Address due to Write back
+Advanced_Descriptor:
 	; Calculate the descriptor to read from
 	mov eax, [i8259x_rx_index]
 	shl eax, 4			; Quick multiply by 16
-	
-	; Legacy Descriptor Write back Length
-	; add eax, 8			; Offset to bytes received
-	
-	add rdi, rax			; Add offset to RDI
+	add rdi, rax			; Add offset to RDI	
 	
 	; Todo: read all 64 bits. check status bit for DD
 	xor ecx, ecx			; Clear RCX
-	; mov cs, [rdi]			; Get the Packet Length
-	
-	; For Advance Descriptor length is at 12 offset
 	mov cx, [rdi+12]			; Get the Packet length
 	cmp cx, 0
 	je net_i8259x_poll_end		; No data? Bail out
@@ -403,7 +424,8 @@ net_i8259x_poll:
 	; For Advance Descriptors we need to reassing Buffer Address due to Write back
 	mov eax, os_PacketBuffers
 	stosq
-	
+
+Common_End:
 	xor eax, eax
 	stosq				; Clear the descriptor length and status
 
