@@ -111,16 +111,16 @@ net_i8259x_reset_dma_wait:
 	jnc net_i8259x_reset_dma_wait	; If not equal, keep waiting
 
 	; Set up the PHY and the link (4.6.4)
-	mov eax, [rsi+i8259x_AUTOC]
-	and eax, 0x0000E000		; Set LMS (bits 15:13) for KX/KX4/KR auto-negotiation enable
-	or eax, 0x00006000		; Set KX/KX4/KR auto-negotiation enable
-	mov [rsi+i8259x_AUTOC], eax
-	mov eax, [rsi+i8259x_AUTOC]
-	and eax, 0xFFFFFE7F		; Set 10G_PMA_PMD_PARALLEL (bits 8:7)
-	mov [rsi+i8259x_AUTOC], eax
+	; mov eax, [rsi+i8259x_AUTOC]
+	; and eax, 0x0000E000		; Set LMS (bits 15:13) for KX/KX4/KR auto-negotiation enable
+	; or eax, 0x00006000		; Set KX/KX4/KR auto-negotiation enable
+	; mov [rsi+i8259x_AUTOC], eax
+	; mov eax, [rsi+i8259x_AUTOC]
+	; and eax, 0x00000180		; Set 10G_PMA_PMD_PARALLEL (bits 8:7)
+	; mov [rsi+i8259x_AUTOC], eax
 
-	mov rax, 20000			; Wait 20ms (20000µs)
-	call b_delay			; Delay for 20ms
+	; mov rax, 20000			; Wait 20ms (20000µs)
+	; call b_delay			; Delay for 20ms
 
 	mov eax, [rsi+i8259x_AUTOC]
 	bts eax, 12			; Restart_AN
@@ -177,7 +177,7 @@ net_i8259x_reset_nextdesc:
 	; Enable Advanced RX descriptors
 	mov eax, [rsi+i8259x_SRRCTL]
 	and eax, 0xF1FFFFFF		; Clear bits 27:25 for DESCTYPE
-	or eax, 0x02000000		; Bits 27:25 = 001 for Advanced desc one buffer
+;	or eax, 0x02000000		; Bits 27:25 = 001 for Advanced desc one buffer
 	bts eax, 28			; i8259x_SRRCTL_DROP_EN
 	mov [rsi+i8259x_SRRCTL], eax
 	; Set up RX descriptor ring 0
@@ -194,20 +194,9 @@ net_i8259x_reset_nextdesc:
 	mov eax, [rsi+i8259x_CTRL_EXT]
 	bts eax, 16
 	mov [rsi+i8259x_CTRL_EXT], eax
-	; Enable DCA in CTRL register
-	mov eax, [rsi+i8259x_DCA_CTRL]
-	or eax, 1                    ; Enable DCA
-	mov [rsi+i8259x_DCA_CTRL], eax
-	; Get the CPU ID dynamically
-	mov eax, 1                   ; CPUID function 1
-	cpuid
-	shr ebx, 24                  ; Extract APIC ID (CPU ID) from EBX
-	mov ecx, ebx                 ; Save CPU ID in ECX
 	; Clear bit 12 of DCA_RXCTRL (Last line in 4.6.7)
 	mov eax, [rsi+i8259x_DCA_RXCTRL]
 	btc eax, 12
-	shl ecx, 24
-	or eax, ecx          ; Set CPU ID (bit 24:31)
 	mov [rsi+i8259x_DCA_RXCTRL], eax
 	; Enable RX
 	mov eax, 1			; RXEN = 1
@@ -393,68 +382,34 @@ net_i8259x_poll:
 	mov rdi, os_rx_desc
 	mov rsi, [os_NetIOBaseMem]	; Load the base MMIO of the NIC
 
-	; Legacy Descriptor
-; Legacy_Descriptor:
-; 	; Calculate the descriptor to read from
-; 	mov eax, [i8259x_rx_index]
-; 	shl eax, 4			; Quick multiply by 16
-; 	add eax, 8			; Offset to bytes received
-; 	add rdi, rax			; Add offset to RDI
-	
-; 	; Todo: read all 64 bits. check status bit for DD
-; 	xor ecx, ecx			; Clear RCX
-; 	mov cx, [rdi]			; Get the Packet length
-; 	cmp cx, 0
-; 	je net_i8259x_poll_end		; No data? Bail out
-
-
-; 	For Advance Descriptors we need to reassing Buffer Address due to Write back
-Advanced_Descriptor:
 	; Calculate the descriptor to read from
-	mov eax, [i8259x_rx_index]
+	mov eax, [i8259x_rx_lasthead]
 	shl eax, 4			; Quick multiply by 16
-	add rdi, rax			; Add offset to RDI	
-	
+	add eax, 8			; Offset to bytes received
+	add rdi, rax			; Add offset to RDI
 	; Todo: read all 64 bits. check status bit for DD
 	xor ecx, ecx			; Clear RCX
-	mov cx, [rdi+12]			; Get the Packet length
+	mov cx, [rdi]			; Get the packet length
 	cmp cx, 0
 	je net_i8259x_poll_end		; No data? Bail out
 
-	; For Advance Descriptors we need to reassing Buffer Address due to Write back
-	mov eax, os_PacketBuffers
-	stosq
-
-Common_End:
 	xor eax, eax
 	stosq				; Clear the descriptor length and status
 
-	mov eax, [i8259x_rx_index]
-	mov [i8259x_rx_lasthead], eax	; Save the last head
-
 	; Increment i8259x_rx_lasthead and the Receive Descriptor Tail
-	mov eax, [i8259x_rx_index]
+	mov eax, [i8259x_rx_lasthead]
 	add eax, 1
 	and eax, i8259x_MAX_DESC - 1
-	mov [i8259x_rx_index], eax
-	; cmp eax, [i8259x_rx_lasthead]
-	call net_i8259x_update_rdt
+	mov [i8259x_rx_lasthead], eax
+	mov eax, [rsi+i8259x_RDT]	; Read the current Receive Descriptor Tail
+	add eax, 1			; Add 1 to the Receive Descriptor Tail
+	and eax, i8259x_MAX_DESC - 1
+	mov [rsi+i8259x_RDT], eax	; Write the updated Receive Descriptor Tail
 
 	pop rax
 	pop rsi
 	pop rdi
 	ret
-
-net_i8259x_update_rdt:
-	; mov rsi, [os_NetIOBaseMem]
-	; mov eax, [i8259x_rx_lasthead]
-	; mov [rsi+i8259x_RDT], eax	; RDL - Receive Descriptor Tail
-	mov eax, [rsi+i8259x_RDT]
-	add eax, 1
-	and eax, i8259x_MAX_DESC - 1
-	mov [rsi+i8259x_RDT], eax
-	ret
-
 
 net_i8259x_poll_end:
 	xor ecx, ecx
@@ -468,11 +423,10 @@ net_i8259x_poll_end:
 ; Variables
 i8259x_tx_lasttail: dd 0
 i8259x_rx_lasthead: dd 0
-i8259x_rx_index: dd 0
 
 ; Constants
 i8259x_MAX_PKT_SIZE	equ 16384
-i8259x_MAX_DESC		equ 4096		; Must be 16, 32, 64, 128, etc.
+i8259x_MAX_DESC		equ 2048		; Must be 16, 32, 64, 128, etc.
 
 ; Register list (All registers should be accessed as 32-bit values)
 
@@ -512,7 +466,6 @@ i8259x_GSCL_5		equ 0x11030 ; PCIe Statistic Control Register #5
 i8259x_FACTPS		equ 0x10150 ; Function Active and Power State to Manageability
 i8259x_PCIEPHYADR	equ 0x11040 ; PCIe PHY Address Register
 i8259x_PCIEPHYDAT	equ 0x11044 ; PCIe PHY Data Register
-i8259x_DCA_CTRL		equ 0x11074 ; Rx DCA Control Register
 
 ; Interrupt Registers
 i8259x_EICR		equ 0x00800 ; Extended Interrupt Cause Register

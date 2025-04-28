@@ -63,6 +63,33 @@ os_hpet_us:
 	ret
 ; -----------------------------------------------------------------------------
 
+; -----------------------------------------------------------------------------
+; os_hpet_us -- Get current nanoseconds (ns) since HPET started
+; IN:	Nothing
+; OUT:	RAX = Time in nanoseconds since start
+os_hpet_ns:
+	push rdx
+	push rcx
+
+	xor edx, edx
+
+	; Read Main Counter
+	mov ecx, HPET_MAIN_COUNTER
+	call os_hpet_read		; Read HPET Main Counter to RAX
+
+	; Multiply by Main Counter Clock Period
+	mov ecx, [os_HPET_Frequency]
+	mul rcx				; RDX:RAX *= RCX
+
+	; Divide by # of femtoseconds in a nanosecond
+	mov rcx, 1000000
+	div rcx				; RAX = RDX:RAX / RCX	
+
+	pop rcx
+	pop rdx
+	ret
+; -----------------------------------------------------------------------------
+
 
 ; -----------------------------------------------------------------------------
 ; os_hpet_read -- Read from a register in the High Precision Event Timer
