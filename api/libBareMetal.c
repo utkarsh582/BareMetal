@@ -1,6 +1,6 @@
 // =============================================================================
 // BareMetal -- a 64-bit OS written in Assembly for x86-64 systems
-// Copyright (C) 2008-2025 Return Infinity -- see LICENSE.TXT
+// Copyright (C) 2008-2024 Return Infinity -- see LICENSE.TXT
 //
 // Version 1.0
 // =============================================================================
@@ -35,7 +35,7 @@ u64 b_net_rx(void *mem, u64 iid) {
 }
 
 
-// Non-volatile Storage
+// Storage
 
 u64 b_nvs_read(void *mem, u64 start, u64 num, u64 drivenum) {
 	u64 tlong;
@@ -57,6 +57,13 @@ u64 b_system(u64 function, u64 var1, u64 var2) {
 	asm volatile ("call *0x00100040" : "=a"(tlong) : "c"(function), "a"(var1), "d"(var2));
 	return tlong;
 }
+
+u64 b_system_mem(u64 function, void *mem, u64 var2) {
+	u64 tlong;
+	asm volatile ("call *0x00100040" : "=a"(tlong) : "c"(function), "a"(mem), "d"(var2));
+	return tlong;
+}
+
 
 
 // =============================================================================
