@@ -17,6 +17,7 @@ b_nvs_write		equ 0x0000000000100038	; Write data to a drive. IN: RAX = Starting 
 
 b_system		equ 0x0000000000100040	; Configure system. IN: RCX = Function, RAX = Variable 1, RDX = Variable 2. OUT: RAX = Result
 
+b_input_string    equ 0x0000000000100050	; Take string from keyboard entry. IN: RDI = location where string will be stored, RCX = Length of string
 
 ; Index for b_system calls
 TIMECOUNTER		equ 0x00

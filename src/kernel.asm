@@ -28,6 +28,7 @@ align 16
 	dq b_nvs_write			; 0x0038
 	dq b_system			; 0x0040
 	dq b_user			; 0x0048
+	dq b_input_string			; 0x0050
 
 align 16
 start:
