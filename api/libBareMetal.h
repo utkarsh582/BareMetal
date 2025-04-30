@@ -19,6 +19,7 @@ typedef uint64_t u64;
 // Input/Output
 u8 b_input(void);
 void b_output(const char *str, u64 nbr);
+u64 b_input_string(void *mem);
 
 // Network
 void b_net_tx(void *mem, u64 len, u64 iid);
@@ -41,6 +42,7 @@ u64 b_system_mem(u64 function, void *mem, u64 var2);
 #define CLOCKCALLBACK_SET	0x06
 #define GET_TIME_MICRO	0x07
 #define GET_TIME_NANO	0x08
+#define INPUT_STRING	0x09
 #define SMP_ID			0x10
 #define SMP_NUMCORES		0x11
 #define SMP_SET			0x12

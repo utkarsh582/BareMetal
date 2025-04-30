@@ -21,6 +21,11 @@ void b_output(const char *str, u64 nbr) {
 	asm volatile ("call *0x00100018" : : "S"(str), "c"(nbr));
 }
 
+u64 b_input_string(void *mem) {
+	u64 tlong;
+	asm volatile ("call *0x00100050" : "=c"(tlong) : "d"(mem));
+	return tlong;
+}
 
 // Network
 
