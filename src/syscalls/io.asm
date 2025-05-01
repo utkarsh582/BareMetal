@@ -56,6 +56,87 @@ b_output_done:
 	ret
 ; -----------------------------------------------------------------------------
 
+; -----------------------------------------------------------------------------
+; b_input_string -- Take string from keyboard entry
+;  IN:	RDI = location where string will be stored
+; OUT:	RCX = length of string that was received (NULL not counted)
+;	All other registers preserved
+
+b_input_string:
+	push rdi
+	push rcx
+	push rax
+
+b_input_more:
+	mov al, '_'			; Cursor character
+	call output_char		; Output the cursor
+	mov al, 0x03			; Decrement cursor
+	call output_char		; Output the cursor
+
+b_input_halt:
+	hlt				; Halt until an interrupt is received
+	call b_input			; Returns the character entered. 0 if there was none
+	jz b_input_halt		; If there was no character then halt until an interrupt is received
+b_input_process:
+	cmp al, 0x1C			; If Enter key pressed, finish
+	je b_input_done
+	cmp al, 0x0E			; Backspace
+	je b_input_backspace
+	cmp al, 32			; In ASCII range (32 - 126)?
+	jl b_input_more
+	cmp al, 126
+	jg b_input_more
+	stosb				; Store AL at RDI and increment RDI by 1
+	inc rcx			; Increment the length of the string
+	call output_char		; Display char
+	jmp b_input_more
+
+b_input_backspace:
+	test rcx, rcx			; backspace at the beginning? get a new char
+	jz b_input_more
+	mov al, ' '
+	call output_char		; Output backspace as a character
+	mov al, 0x03			; Decrement cursor
+	call output_char		; Output the cursor
+	mov al, 0x03			; Decrement cursor
+	call output_char		; Output the cursor
+	dec rdi				; go back one in the string
+	mov byte [rdi], 0x00		; NULL out the char
+	dec rcx			; Decrement the length of the string
+	jmp b_input_more
+
+b_input_done:
+	xor al, al
+	stosb				; We NULL terminate the string
+	mov al, ' '
+	call output_char		; Overwrite the cursor
+
+	pop rax
+	pop rcx
+	pop rdi
+	ret
+; -----------------------------------------------------------------------------
+
+
+; -----------------------------------------------------------------------------
+; output_char -- Displays a char
+;  IN:	AL  = char to display
+; OUT:	All registers preserved
+output_char:
+	push rsi
+	push rcx
+
+	mov [tempchar], al
+	mov rsi, tempchar
+	mov ecx, 1
+	call b_output
+
+	pop rcx
+	pop rsi
+	ret
+; -----------------------------------------------------------------------------
+
+tempchar: db 0, 0, 0
 
 ; =============================================================================
 ; EOF

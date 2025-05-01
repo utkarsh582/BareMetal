@@ -1,6 +1,6 @@
 // =============================================================================
 // BareMetal -- a 64-bit OS written in Assembly for x86-64 systems
-// Copyright (C) 2008-2025 Return Infinity -- see LICENSE.TXT
+// Copyright (C) 2008-2024 Return Infinity -- see LICENSE.TXT
 //
 // Version 1.0
 // =============================================================================
@@ -19,22 +19,30 @@ typedef uint64_t u64;
 // Input/Output
 u8 b_input(void);
 void b_output(const char *str, u64 nbr);
+u64 b_input_string(void *mem);
 
 // Network
 void b_net_tx(void *mem, u64 len, u64 iid);
 u64 b_net_rx(void *mem, u64 iid);
 
-// Non-volatile Storage
+// Storage
 u64 b_nvs_read(void *mem, u64 start, u64 num, u64 drivenum);
 u64 b_nvs_write(void *mem, u64 start, u64 num, u64 drivenum);
 
 // System
 u64 b_system(u64 function, u64 var1, u64 var2);
+u64 b_system_mem(u64 function, void *mem, u64 var2);
 
 // Index for b_config calls
 #define TIMECOUNTER		0x00
-#define FREE_MEMORY		0x01
-#define GET_MOUSE		0x02
+#define FREE_MEMORY		0x02
+#define NETWORKCALLBACK_GET	0x03
+#define NETWORKCALLBACK_SET	0x04
+#define CLOCKCALLBACK_GET	0x05
+#define CLOCKCALLBACK_SET	0x06
+#define GET_TIME_MICRO	0x07
+#define GET_TIME_NANO	0x08
+#define INPUT_STRING	0x09
 #define SMP_ID			0x10
 #define SMP_NUMCORES		0x11
 #define SMP_SET			0x12
@@ -42,21 +50,23 @@ u64 b_system(u64 function, u64 var1, u64 var2);
 #define SMP_LOCK		0x14
 #define SMP_UNLOCK		0x15
 #define SMP_BUSY		0x16
-#define TSC			0x1F
+#define TSC			    0x1F
 #define SCREEN_LFB_GET		0x20
 #define SCREEN_X_GET		0x21
 #define SCREEN_Y_GET		0x22
 #define SCREEN_PPSL_GET		0x23
 #define SCREEN_BPP_GET		0x24
 #define MAC_GET			0x30
+#define Check_DCA			0x31
+#define Get_Rx_Packet_Count		0x32
+#define AHCI_ID         0x40
+#define AHCI_BASE       0x41
+#define AHCI_PA         0x42
+#define PxSSTS_GET      0x43
 #define BUS_READ		0x50
 #define BUS_WRITE		0x51
 #define STDOUT_SET		0x52
 #define STDOUT_GET		0x53
-#define CALLBACK_TIMER		0x60
-#define CALLBACK_NETWORK	0x61
-#define CALLBACK_KEYBOARD	0x62
-#define CALLBACK_MOUSE		0x63
 #define DUMP_MEM		0x70
 #define DUMP_RAX		0x71
 #define DELAY			0x72

@@ -131,6 +131,123 @@ b_system_stdout_set:
 	mov qword [0x100018], rax
 	ret
 
+;Storage
+
+; -----------------------------------------------------------------------------
+; b_system_ahci_id -- System call to retrieve SATA IDENTIFY data
+; IN:  RDX = Port number to query
+;      RAX = Memory location to store details (512 bytes)
+; OUT: RAX = 0 on success, 1 on failure
+; -----------------------------------------------------------------------------
+b_system_ahci_id:
+    push rdi                ; Preserve caller's registers
+    push rax
+    push rdx
+
+    mov rdi, rax            ; Store memory address for details into RDI
+    xchg rax, rdi           ; Exchange RAX and RDI (RAX now has the memory address)
+    call os_virt_to_phys    ; Convert virtual to physical address
+    xchg rax, rdi           ; Restore RAX and RDI
+
+    call ahci_id            ; Call the SATA IDENTIFY function
+
+    pop rdx                 ; Restore registers
+    pop rax
+    pop rdi
+    ret
+; -----------------------------------------------------------------------------
+
+; -----------------------------------------------------------------------------
+; b_system_ahci_base_get -- Retrieve AHCI_BASE_ADDRESS
+; IN:  None
+; OUT: RAX = AHCI_BASE_ADDRESS
+; -----------------------------------------------------------------------------
+b_system_ahci_base_get:
+    mov rax, [os_AHCI_Base] ; Load the address from the system variable
+    ret
+
+; -----------------------------------------------------------------------------
+
+; -----------------------------------------------------------------------------
+; b_system_ahci_base_get -- Retrieve Active Ports Bit
+; IN:  None
+; OUT: RAX = AHCI_PA
+; -----------------------------------------------------------------------------
+b_system_ahci_pa_get:
+    mov rax, [os_AHCI_PA] ; Load the address from the system variable
+    ret
+
+; -----------------------------------------------------------------------------
+; -----------------------------------------------------------------------------
+; b_system_ahci_pxssts_get -- System call to retrieve PxSSTS value for a given port
+; IN:  RDX = Port number to query (0-31)
+; OUT: RAX = PxSSTS value for the specified port on success, 1 on failure
+; -----------------------------------------------------------------------------
+b_system_ahci_pxssts_get:
+    ; Validate the port number
+    cmp rdx, 32                ; Check if port number is within valid range
+    jae b_system_ahci_pxssts_get_fail ; Jump to failure if out of range
+
+    ; Calculate the address of PxSSTS
+    mov rax, os_AHCI_PxSSTS    ; Load base address of PxSSTS storage
+    shl rdx, 2                 ; Multiply port number by 4 (size of dword)
+    add rax, rdx               ; Get the address for the specific port's PxSSTS
+
+    ; Load the PxSSTS value for the specified port
+    mov rax, [rax]             ; Load PxSSTS value into RAX
+    ret
+
+b_system_ahci_pxssts_get_fail:
+    mov rax, 1                 ; Return 1 on failure
+    ret
+; -----------------------------------------------------------------------------
+; -----------------------------------------------------------------------------
+
+; -----------------------------------------------------------------------------
+; b_system_get_rx_packets -- Retrieve Recieve Packet Counts
+; IN:  None
+; OUT: RAX = RX Packet Count
+; -----------------------------------------------------------------------------
+b_system_get_rx_packets:
+    mov rax, [os_net_RXPackets] ; Load the address from the system variable
+    ret
+
+; -----------------------------------------------------------------------------
+
+; -----------------------------------------------------------------------------
+; b_system_get_dca_enable -- Check Whether DCA Enable or not for Network
+; IN:  None
+; OUT: RAX = 1 if enable otherwise 0
+; -----------------------------------------------------------------------------
+b_system_get_dca_enable:
+    mov rax, [os_dca_enable] ; Load the address from the system variable
+    ret
+
+; -----------------------------------------------------------------------------
+
+; -----------------------------------------------------------------------------
+; b_system_get_time_micro -- Give time in microsecond since System started
+; IN:  None
+; OUT: RAX = time in microsecond
+; -----------------------------------------------------------------------------
+b_system_get_time_micro:
+    call os_hpet_us ; Call get Micosecond function
+    ret
+
+; -----------------------------------------------------------------------------
+
+; -----------------------------------------------------------------------------
+; b_system_get_time_nano -- Give time in nanosecond since System started
+; IN:  None
+; OUT: RAX = time in nanosecond
+; -----------------------------------------------------------------------------
+b_system_get_time_nano:
+    call os_hpet_ns ; Call get Nanosecond function
+    ret
+
+; -----------------------------------------------------------------------------
+
+
 ; Misc
 
 b_system_callback_timer:
@@ -198,15 +315,16 @@ b_system_shutdown:
 
 ; -----------------------------------------------------------------------------
 ; b_delay -- Delay by X microseconds
-; IN:	RAX = Time microseconds
-; OUT:	All registers preserved
-; Note:	There are 1,000,000 microseconds in a second
-;	There are 1,000 milliseconds in a second
+; IN:    RAX = Time microseconds
+; OUT:   All registers preserved
+; Note:  There are 1,000,000 microseconds in a second
+;        There are 1,000 milliseconds in a second
 b_delay:
-	push rdx
-	push rcx
-	push rbx
-	push rax
+    ; Initialize the desired delay in microseconds (e.g., 10 seconds = 10,000,000 microseconds)
+    push rdx
+    push rcx
+    push rbx
+    push rax
 
 	mov rbx, rax			; Save delay to RBX
 	xor edx, edx
@@ -225,12 +343,11 @@ b_delay_loop:				; Stay in this loop until the HPET timer reaches the expected v
 	cmp rax, rbx			; If RAX < RBX then jump to loop, otherwise fall through to end
 	jb b_delay_loop
 b_delay_end:
-
-	pop rax
-	pop rbx
-	pop rcx
-	pop rdx
-	ret
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    ret
 ; -----------------------------------------------------------------------------
 
 
@@ -312,8 +429,8 @@ b_system_table:
 	dw none				; 0x04
 	dw none				; 0x05
 	dw none				; 0x06
-	dw none				; 0x07
-	dw none				; 0x08
+	dw b_system_get_time_micro	; 0x07
+	dw b_system_get_time_nano	; 0x08
 	dw none				; 0x09
 	dw none				; 0x0A
 	dw none				; 0x0B
@@ -360,8 +477,8 @@ b_system_table:
 
 ; Network
 	dw b_system_mac_get		; 0x30
-	dw none				; 0x31
-	dw none				; 0x32
+	dw b_system_get_dca_enable		; 0x31
+	dw b_system_get_rx_packets		; 0x32
 	dw none				; 0x33
 	dw none				; 0x34
 	dw none				; 0x35
@@ -377,10 +494,10 @@ b_system_table:
 	dw none				; 0x3F
 
 ; Storage
-	dw none				; 0x40
-	dw none				; 0x41
-	dw none				; 0x42
-	dw none				; 0x43
+	dw b_system_ahci_id			; 0x40
+	dw b_system_ahci_base_get	; 0x41
+	dw b_system_ahci_pa_get		; 0x42
+	dw b_system_ahci_pxssts_get		; 0x43
 	dw none				; 0x44
 	dw none				; 0x45
 	dw none				; 0x46

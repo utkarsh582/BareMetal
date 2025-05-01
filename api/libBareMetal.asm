@@ -9,14 +9,15 @@
 b_input			equ 0x0000000000100010	; Scans keyboard for input. OUT: AL = 0 if no key pressed, otherwise ASCII code
 b_output		equ 0x0000000000100018	; Displays a number of characters. IN: RSI = message location, RCX = number of characters
 
-b_net_tx		equ 0x0000000000100020	; Transmit a packet via a network interface. IN: RSI = Memory location where packet is stored, RCX = Length of packet, RDX = Device
-b_net_rx		equ 0x0000000000100028	; Polls the network interface for received packet. IN: RDI = Memory location where packet will be stored, RDX = Device. OUT: RCX = Length of packet
+b_net_tx		equ 0x0000000000100020	; Transmit a packet via a network interface. IN: RSI = Memory location where packet is stored, RCX = Length of packet
+b_net_rx		equ 0x0000000000100028	; Polls the network interface for received packet. IN: RDI = Memory location where packet will be stored. OUT: RCX = Length of packet
 
-b_nvs_read		equ 0x0000000000100030	; Read data from a non-volatile storage device. IN: RAX = Starting sector, RCX = Number of sectors to read, RDX = Device, RDI = Memory location to store data
-b_nvs_write		equ 0x0000000000100038	; Write data to a non-volatile storage device. IN: RAX = Starting sector, RCX = Number of sectors to write, RDX = Device, RSI = Memory location of data to store
+b_nvs_read		equ 0x0000000000100030	; Read data from a drive. IN: RAX = Starting sector, RCX = Number of sectors to read, RDX = Drive, RDI = Memory location to store data
+b_nvs_write		equ 0x0000000000100038	; Write data to a drive. IN: RAX = Starting sector, RCX = Number of sectors to write, RDX = Drive, RSI = Memory location of data to store
 
 b_system		equ 0x0000000000100040	; Configure system. IN: RCX = Function, RAX = Variable 1, RDX = Variable 2. OUT: RAX = Result
 
+b_input_string    equ 0x0000000000100050	; Take string from keyboard entry. IN: RDI = location where string will be stored, RCX = Length of string
 
 ; Index for b_system calls
 TIMECOUNTER		equ 0x00
