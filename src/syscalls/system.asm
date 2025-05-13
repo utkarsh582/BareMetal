@@ -275,6 +275,8 @@ b_system_debug_dump_rax:
 	call os_debug_dump_rax
 	ret
 
+ascfsacfsa:
+	ret
 b_system_delay:
 	call b_delay
 	ret
