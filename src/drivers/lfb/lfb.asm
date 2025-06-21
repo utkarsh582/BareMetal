@@ -85,7 +85,7 @@ render_done:
 	mov al, [font_height]
 	mov cl, [font_width]
 	mul ecx				; EDX:EAX := EAX * ECX
-	shl rax, 2			; Quick multiply by 4
+	shl eax, 2			; Quick multiply by 4
 	mov [lfb_glyph_bytes], eax
 
 	; Pixels per row = font_h * [os_screen_x] * 4 * [Screen_Cursor_Row]
@@ -96,18 +96,18 @@ render_done:
 	mov ax, [os_screen_x]
 	mov cx, font_h			; Font height
 	mul ecx				; EDX:EAX := EAX * ECX
-	shl rax, 2			; Quick multiply by 4
+	shl eax, 2			; Quick multiply by 4
 	mov [lfb_glyph_bytes_per_row], eax
 
 	xor eax, eax
 	mov ax, font_w
-	shl rax, 2
+	shl eax, 2			; Quick multiply by 4
 	mov [lfb_glyph_bytes_per_col], eax
 
 	xor eax, eax
-	mov ax, [os_screen_x]
-	sub ax, font_w
-	shl eax, 2
+	mov ax, [os_screen_ppsl]	; Use Pixels Per Scan Line in case system aligns video memory
+	sub ax, font_w			; Subtract the width of a single glyph
+	shl eax, 2			; Quick multiply by 4
 	mov [lfb_glyph_next_line], rax
 
 	mov rax, [os_screen_lfb]
@@ -138,6 +138,7 @@ lfb_inc_cursor:
 	jne lfb_inc_cursor_done		; If not equal we are done
 	mov word [Screen_Cursor_Col], 0	; Reset column to 0
 	inc word [Screen_Cursor_Row]	; Increment the current cursor row
+	call lfb_draw_line
 	mov ax, [Screen_Cursor_Row]
 	cmp ax, [Screen_Rows]		; Compare it to the # of rows for the screen
 	jne lfb_inc_cursor_done		; If not equal we are done
