@@ -220,7 +220,7 @@ b_system_get_rx_packets:
 ; OUT: RAX = 1 if enable otherwise 0
 ; -----------------------------------------------------------------------------
 b_system_get_dca_enable:
-    mov rax, [os_dca_enable] ; Load the address from the system variable
+    mov rax, [i8259x_found_count] ; Load the address from the system variable
     ret
 
 ; -----------------------------------------------------------------------------
@@ -367,6 +367,44 @@ b_tsc:
 
 
 ; -----------------------------------------------------------------------------
+; b_rx_buffer -- Change OS RX Buffer to point to a new User-Space Buffer
+; IN:   RAX = Virtual address of user-space buffer (512 bytes)
+; OUT:  RAX = 1 if Success, 0 if Failure
+;       All other registers preserved
+; -----------------------------------------------------------------------------
+b_rx_buffer:
+    push rax
+    push rdi
+    push rsi
+    push rcx
+
+    ; Convert virtual address to physical address
+    call os_virt_to_phys        ; RAX = physical address
+
+    test rax, rax
+    jz rx_fail                    ; If conversion failed, return 0
+
+    mov r10, rax                ; RSI = physical address of buffer
+	call net_i8259x_reset
+
+    pop rcx
+    pop rsi
+    pop rdi
+    pop rax
+    mov rax, 1                  ; Success
+    ret
+
+rx_fail:
+    pop rcx
+    pop rsi
+    pop rdi
+    pop rax
+    xor rax, rax                ; Failure (0)
+    ret
+; -----------------------------------------------------------------------------
+
+
+; -----------------------------------------------------------------------------
 ; reboot -- Reboot the computer
 reboot:
 	mov al, PS2_RESET_CPU
@@ -479,7 +517,7 @@ b_system_table:
 	dw b_system_mac_get		; 0x30
 	dw b_system_get_dca_enable		; 0x31
 	dw b_system_get_rx_packets		; 0x32
-	dw none				; 0x33
+	dw b_rx_buffer		; 0x33
 	dw none				; 0x34
 	dw none				; 0x35
 	dw none				; 0x36

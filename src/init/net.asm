@@ -9,6 +9,7 @@
 ; -----------------------------------------------------------------------------
 ; init_net -- Configure the first network device it finds
 init_net:
+	mov byte [i8259x_found_count], 0
 	; Check Bus Table for a Ethernet device
 	mov rsi, bus_table		; Load Bus Table address to RSI
 	sub rsi, 16
@@ -86,6 +87,12 @@ init_net_probe_found_i8257x:
 	jmp init_net_probe_found_finish
 
 init_net_probe_found_i8259x:
+	mov al, [i8259x_found_count]
+	inc al
+	mov [i8259x_found_count], al
+	cmp al, 2
+	jne skip_this_i8259x   ; Skip first, proceed only on second device
+	; Now we proceed to init the second one:
 	call net_i8259x_init
 	mov rdi, os_net_transmit
 	mov rax, net_i8259x_transmit
@@ -93,6 +100,11 @@ init_net_probe_found_i8259x:
 	mov rax, net_i8259x_poll
 	stosq
 	jmp init_net_probe_found_finish
+
+skip_this_i8259x:
+	mov rsi, r9
+	add rsi, 8   ; Fix RSI back to Class Code field before next iteration
+	jmp init_net_check_bus
 
 init_net_probe_found_r8169:
 	call net_r8169_init
@@ -115,7 +127,6 @@ init_net_probe_not_found:
 
 	ret
 ; -----------------------------------------------------------------------------
-
 
 ; =============================================================================
 ; EOF

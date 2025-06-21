@@ -93,10 +93,17 @@ b_net_rx:
 	call qword [os_net_poll]	; Call the driver
 	cmp cx, 0
 	je b_net_rx_nodata
+
+	mov rsi, os_PacketBuffers	; Packet exists here
+	; cmp byte [rsi+23], 0x11		; Check if the protocol is UDP
+	; je b_net_rx_nodata			; If UDP, ignore the packet
+	; Check if destination IP == 239.60.60.41 (0xEF3C3C29)
+    ; cmp dword [rsi + 30], 0x293C3CEF  ; Little endian: 0xEF3C3C29 → 0x293C3CEF
+    ; jne b_net_rx_nodata
+
 	inc qword [os_net_RXPackets]
 	add qword [os_net_RXBytes], rcx
 
-	mov rsi, os_PacketBuffers	; Packet exists here
 	push rcx
 	rep movsb			; Copy packet to requested address
 	pop rcx

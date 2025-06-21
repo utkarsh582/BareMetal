@@ -44,6 +44,8 @@ net_i8259x_init:
 	shr eax, 8
 	mov [os_NetMAC+5], al
 
+	mov r10, os_PacketBuffers	; Set the default packet buffer address
+
 	; Reset the device
 	call net_i8259x_reset
 
@@ -140,7 +142,7 @@ net_i8259x_reset_dma_wait:
 	mov ecx, i8259x_MAX_DESC
 	mov rdi, os_rx_desc
 net_i8259x_reset_nextdesc:	
-	mov rax, os_PacketBuffers	; Default packet will go here
+	mov rax, r10	; Default packet will go here
 	stosq
 	xor eax, eax
 	stosq
@@ -280,28 +282,6 @@ net_i8259x_init_tx_enable_wait:
 	mov eax, [rsi+i8259x_TXDCTL]
 	bt eax, 25
 	jnc net_i8259x_init_tx_enable_wait
-
-	; ; Enable interrupts (4.6.3.1)
-	; ; Step 1:-
-	; mov eax, [rsi+0x00898]		; Get Ixgbe_GPIE
-	; or eax, 0x00000010		; GPIE_MSIx_Mode
-	; or eax, 0x80000000		; GPIE_PBA_SUPPORT
-	; or eax, 0x40000000		; GPIE_EIAME
-	; mov [rsi+0x00898], eax		; Set Ixgbe_GPIE
-	
-	; ; Step 2:-	We don't use the minimum threshold interrupt
-	
-	; ; Step 3:-
-	; mov eax, 0x0000FFFF
-	; mov [rsi+i8259x_EIAC], eax
-
-	; ; Step 4:- In our case we prefer to not auto-mask the interrupts
-	; ; TODO- Set EITR
-	
-	; ; Step 5:-
-	; mov eax, [rsi+i8259x_EIMS]
-	; or eax, 0x00000001
-	; mov [rsi+i8259x_EIMS], eax
 	
 
 ; DEBUG - Enable Promiscuous mode
@@ -481,6 +461,7 @@ i8259x_PBACL		equ 0x110C0 ; MSI-X PBA Clear
 ; Receive Registers
 i8259x_FCTRL		equ 0x05080 ; Filter Control Register
 i8259x_MTA		equ 0x05200 ; Multicast Table Array
+i8259x_MCSTCTRL		equ 0x05090 ; Multicast Control Register
 i8259x_RAL		equ 0x0A200 ; Receive Address Low (Lower 32-bits of 48-bit address)
 i8259x_RAH		equ 0x0A204 ; Receive Address High (Upper 16-bits of 48-bit address). Bit 31 should be set for Address Valid
 
