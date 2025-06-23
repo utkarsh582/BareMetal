@@ -209,7 +209,7 @@ b_system_ahci_pxssts_get_fail:
 ; OUT: RAX = RX Packet Count
 ; -----------------------------------------------------------------------------
 b_system_get_rx_packets:
-    mov rax, [os_net_RXPackets] ; Load the address from the system variable
+    mov rax, [nt_rx_packets] ; Load the address from the system variable
     ret
 
 ; -----------------------------------------------------------------------------
@@ -477,9 +477,9 @@ b_system_table:
 
 ; Network
 	dw b_system_mac_get		; 0x30
-	dw b_system_get_dca_enable		; 0x31
+	dw none				; 0x31
 	dw b_system_get_rx_packets		; 0x32
-	dw none				; 0x33
+	dw b_system_get_dca_enable		; 0x33
 	dw none				; 0x34
 	dw none				; 0x35
 	dw none				; 0x36
