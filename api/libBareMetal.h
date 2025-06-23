@@ -56,9 +56,10 @@ u64 b_system_mem(u64 function, void *mem, u64 var2);
 #define SCREEN_Y_GET		0x22
 #define SCREEN_PPSL_GET		0x23
 #define SCREEN_BPP_GET		0x24
-#define MAC_GET			0x30
-#define Check_DCA			0x31
-#define Get_Rx_Packet_Count		0x32
+#define NET_STATUS		0x30
+#define NET_CONFIG		0x31
+#define Check_DCA			0x32
+#define Get_Rx_Packet_Count		0x33
 #define AHCI_ID         0x40
 #define AHCI_BASE       0x41
 #define AHCI_PA         0x42
