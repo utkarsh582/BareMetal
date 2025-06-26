@@ -135,7 +135,15 @@ b_system_stdout_set:
 	mov qword [0x100018], rax
 	ret
 
+
 ;Storage
+b_system_ahci_base:
+	mov rax, [os_AHCI_Base] ; Load the address from the system variable
+    ret
+
+b_system_ahci_pa:
+	mov rax, [os_AHCI_PA] ; Load the address from the system variable
+    ret
 
 ; -----------------------------------------------------------------------------
 ; b_system_ahci_id -- System call to retrieve SATA IDENTIFY data
@@ -161,27 +169,6 @@ b_system_ahci_id:
     ret
 ; -----------------------------------------------------------------------------
 
-; -----------------------------------------------------------------------------
-; b_system_ahci_base_get -- Retrieve AHCI_BASE_ADDRESS
-; IN:  None
-; OUT: RAX = AHCI_BASE_ADDRESS
-; -----------------------------------------------------------------------------
-b_system_ahci_base_get:
-    mov rax, [os_AHCI_Base] ; Load the address from the system variable
-    ret
-
-; -----------------------------------------------------------------------------
-
-; -----------------------------------------------------------------------------
-; b_system_ahci_base_get -- Retrieve Active Ports Bit
-; IN:  None
-; OUT: RAX = AHCI_PA
-; -----------------------------------------------------------------------------
-b_system_ahci_pa_get:
-    mov rax, [os_AHCI_PA] ; Load the address from the system variable
-    ret
-
-; -----------------------------------------------------------------------------
 ; -----------------------------------------------------------------------------
 ; b_system_ahci_pxssts_get -- System call to retrieve PxSSTS value for a given port
 ; IN:  RDX = Port number to query (0-31)
@@ -484,11 +471,9 @@ b_system_table:
 	dw b_system_net_config		; 0x31
 	dw b_system_get_dca_enable		; 0x32
 	dw b_system_get_rx_packets		; 0x33
-	dw none				; 0x32
-	dw none				; 0x33
-	dw none				; 0x34
-	dw none				; 0x35
-	dw none				; 0x36
+	dw b_system_ahci_base			; 0x34
+	dw b_system_ahci_id				; 0x35
+	dw b_system_ahci_pa				; 0x36
 	dw none				; 0x37
 	dw none				; 0x38
 	dw none				; 0x39
@@ -500,10 +485,10 @@ b_system_table:
 	dw none				; 0x3F
 
 ; Storage
-	dw b_system_ahci_id			; 0x40
-	dw b_system_ahci_base_get	; 0x41
-	dw b_system_ahci_pa_get		; 0x42
-	dw b_system_ahci_pxssts_get		; 0x43
+	dw none				; 0x40
+	dw none				; 0x41
+	dw none				; 0x42
+	dw none				; 0x43
 	dw none				; 0x44
 	dw none				; 0x45
 	dw none				; 0x46

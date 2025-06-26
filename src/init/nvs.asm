@@ -9,20 +9,20 @@
 ; -----------------------------------------------------------------------------
 ; init_nvs -- Configure the first non-volatile storage device it finds
 init_nvs:
-	; Check Bus Table for NVMe
-	mov rsi, bus_table		; Load Bus Table address to RSI
-	sub rsi, 16
-	add rsi, 8			; Add offset to Class Code
-init_nvs_nvme_check:
-	add rsi, 16			; Increment to next record in memory
-	mov ax, [rsi]			; Load Class Code / Subclass Code
-	cmp ax, 0xFFFF			; Check if at end of list
-	je init_nvs_nvme_skip		; If no NVMe the bail out
-	cmp ax, 0x0108			; Mass Storage Controller (01) / NVMe Controller (08)
-	je init_nvs_nvme
-	jmp init_nvs_nvme_check		; Check Bus Table again
-init_nvs_nvme_skip:
-
+; 	; Check Bus Table for NVMe
+; 	mov rsi, bus_table		; Load Bus Table address to RSI
+; 	sub rsi, 16
+; 	add rsi, 8			; Add offset to Class Code
+; init_nvs_nvme_check:
+; 	add rsi, 16			; Increment to next record in memory
+; 	mov ax, [rsi]			; Load Class Code / Subclass Code
+; 	cmp ax, 0xFFFF			; Check if at end of list
+; 	je init_nvs_nvme_skip		; If no NVMe the bail out
+; 	cmp ax, 0x0108			; Mass Storage Controller (01) / NVMe Controller (08)
+; 	je init_nvs_nvme
+; 	jmp init_nvs_nvme_check		; Check Bus Table again
+; init_nvs_nvme_skip:
+	mov byte [sata_found_count], 0
 	; Check Bus Table for any other supported controllers
 	mov rsi, bus_table		; Load Bus Table address to RSI
 	sub rsi, 16
@@ -47,10 +47,20 @@ init_nvs_nvme:
 	jmp init_nvs_done
 
 init_nvs_ahci:
+	mov al, [sata_found_count]
+	inc al
+	mov [sata_found_count], al
+	cmp al, 2
+	jne skip_this_sata   ; Skip first, proceed only on second device
+	; Now we proceed to init the second one:
 	sub rsi, 8			; Move RSI back to start of Bus record
 	mov edx, [rsi]			; Load value for os_bus_read/write
 	call ahci_init
 	jmp init_nvs_done
+
+skip_this_sata:
+	; Skip initialization for this SATA device
+	jmp init_nvs_check_bus
 
 init_nvs_virtio_blk:
 	sub rsi, 8			; Move RSI back to start of Bus record

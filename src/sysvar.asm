@@ -132,7 +132,7 @@ key_control:		equ os_SystemVariables + 0x0318
 os_BSP:			equ os_SystemVariables + 0x0319
 os_HPET_IRQ:		equ os_SystemVariables + 0x031A
 os_net_icount:		equ os_SystemVariables + 0x031B
-
+sata_found_count:		equ os_SystemVariables + 0x031C	; Number of SATA devices found
 
 ; System tables
 bus_table:		equ os_SystemVariables + 0x8000
